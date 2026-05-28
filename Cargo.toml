@@ -1,0 +1,11 @@
+[package]
+name = "gstep"
+version = "0.1.0"
+edition = "2024"
+description = "A Git commit-aware micro-step layer for AI coding workflows."
+license = "MIT"
+readme = "README.md"
+keywords = ["git", "cli", "mcp", "ai", "workflow"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
