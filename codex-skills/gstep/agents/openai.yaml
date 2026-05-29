@@ -1,0 +1,10 @@
+interface:
+  display_name: "Gstep"
+  short_description: "Use gstep micro-steps in Git repos"
+  default_prompt: "Use $gstep to checkpoint, inspect, or compare my current Git work with gstep."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "gstep"
+      description: "Local gstep stdio MCP server"
