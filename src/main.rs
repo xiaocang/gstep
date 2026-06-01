@@ -44,6 +44,7 @@ fn run() -> Result<()> {
 
     match args[0].as_str() {
         "begin" => cmd_begin(&args[1..]),
+        "fork" => cmd_fork(&args[1..]),
         "status" => cmd_status(&args[1..]),
         "timeline" => cmd_timeline(&args[1..]),
         "log" => cmd_log(&args[1..]),
@@ -72,7 +73,8 @@ fn print_usage() {
 \n\
 Usage:\n\
   gstep begin <name> [--anchor git:<rev>]\n\
-  gstep status [--json]\n\
+  gstep fork <name> [--from <selector>]\n\
+  gstep status [--all] [--json]\n\
   gstep timeline [--graph] [--json]\n\
   gstep log [--steps-only] [--include-git]\n\
   gstep show <selector>\n\
@@ -161,14 +163,21 @@ fn cmd_begin(args: &[String]) -> Result<()> {
     fs::create_dir_all(&ctx.gstep_dir)?;
     ensure_shadow_repo(&ctx)?;
     let anchor_commit = resolve_git_commit(&ctx, &anchor[4..])?;
-    let state = State {
+    let mut state = State {
         session: name,
         anchor: anchor_commit.clone(),
         current: None,
         next_step: 1,
         steps: Vec::new(),
         branches: Vec::new(),
+        collab: None,
     };
+    state.collab = Some(Collab {
+        shared_head_tree: git_commit_tree(&ctx, &anchor_commit)?,
+        next_conflict: 1,
+        agents: Vec::new(),
+        conflicts: Vec::new(),
+    });
     save_state(&ctx, &state)?;
 
     println!("Started gstep session '{}'", state.session);
@@ -188,10 +197,230 @@ fn cmd_begin(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(args: &[String]) -> Result<()> {
-    let json = parse_only_json_flag(args, "status")?;
+fn cmd_fork(args: &[String]) -> Result<()> {
+    cmd_agent_create(args)
+}
+
+fn cmd_agent_create(args: &[String]) -> Result<()> {
+    if args.is_empty() {
+        return Err(Error::new("fork requires an agent name"));
+    }
+    let name = args[0].clone();
+    validate_name(&name)?;
+    let mut from = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--from" => {
+                index += 1;
+                from = Some(
+                    args.get(index)
+                        .ok_or_else(|| Error::new("--from requires a selector"))?
+                        .clone(),
+                );
+            }
+            other => return Err(Error::new(format!("unknown fork option: {other}"))),
+        }
+        index += 1;
+    }
+
+    let ctx = Context::discover()?;
+    let mut state = load_state(&ctx)?;
+    if state.find_agent(&name).is_some() {
+        return Err(Error::new(format!("agent already exists: {name}")));
+    }
+    let base_tree = match from {
+        Some(selector) => resolve_selector(&ctx, &state, &selector)?.tree,
+        None => require_collab(&state)?.shared_head_tree.clone(),
+    };
+    let rel_base = format!("agents/{name}");
+    let upper_dir = format!("{rel_base}/upper");
+    let tombstones_path = format!("{rel_base}/tombstones");
+    let index_path = format!("{rel_base}/index");
+    fs::create_dir_all(ctx.gstep_dir.join(&upper_dir))?;
+    fs::write(ctx.gstep_dir.join(&tombstones_path), "")?;
+    let view_path = Some(default_agent_view_path(&ctx, &state, &name)?);
+
+    require_collab_mut(&mut state)?.agents.push(Agent {
+        name: name.clone(),
+        base_tree,
+        upper_dir,
+        tombstones_path,
+        index_path,
+        view_path,
+        conflict: None,
+        created_at: current_timestamp(),
+    });
+    save_state(&ctx, &state)?;
+
+    let agent = state.find_agent(&name).expect("agent was just created");
+    println!("Created gstep agent {name}");
+    println!("base tree: {}", agent.base_tree);
+    println!("view path: {}", agent.view_path.as_deref().unwrap_or(""));
+    Ok(())
+}
+
+fn cmd_agent_status(args: &[String]) -> Result<()> {
+    let mut json = false;
+    let mut all = false;
+    let mut name = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--all" => all = true,
+            other if name.is_none() => name = Some(other.to_string()),
+            other => {
+                return Err(Error::new(format!(
+                    "unexpected agent status argument: {other}"
+                )));
+            }
+        }
+    }
+
     let ctx = Context::discover()?;
     let state = load_state(&ctx)?;
+    let collab = require_collab(&state)?;
+    let agents = if let Some(name) = name.as_ref().filter(|_| !all) {
+        vec![
+            state
+                .find_agent(name)
+                .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?,
+        ]
+    } else {
+        collab.agents.iter().collect::<Vec<_>>()
+    };
+
+    if json {
+        let entries = agents
+            .iter()
+            .map(|agent| agent_status_json(&ctx, collab, agent))
+            .collect::<Result<Vec<_>>>()?
+            .join(",\n");
+        println!(
+            "{{\n  \"shared_head_tree\": {},\n  \"agents\": [\n{}\n  ]\n}}",
+            json_string(&collab.shared_head_tree),
+            entries
+        );
+        return Ok(());
+    }
+
+    println!("Shared head tree: {}", collab.shared_head_tree);
+    for agent in agents {
+        let tree = agent_tree(&ctx, agent)?;
+        println!();
+        println!("Agent: {}", agent.name);
+        println!("  base:     {}", agent.base_tree);
+        println!("  view:     {tree}");
+        println!(
+            "  dirty:    {}",
+            if tree != agent.base_tree { "yes" } else { "no" }
+        );
+        println!(
+            "  view path:{}",
+            agent.view_path.as_deref().unwrap_or("not assigned")
+        );
+        println!(
+            "  conflict: {}",
+            agent.conflict.as_deref().unwrap_or("none")
+        );
+    }
+    Ok(())
+}
+
+fn commit_agent_changes(
+    ctx: &Context,
+    state: &mut State,
+    name: &str,
+    message: String,
+) -> Result<()> {
+    let agent = state
+        .find_agent(name)
+        .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?
+        .clone();
+    let agent_tree = agent_tree(ctx, &agent)?;
+    let shared_tree = require_collab(state)?.shared_head_tree.clone();
+    if agent_tree == agent.base_tree {
+        println!("Agent {name} has no changes to commit");
+        return Ok(());
+    }
+
+    match merge_agent_tree(ctx, &agent.base_tree, &shared_tree, &agent_tree)? {
+        MergeOutcome::Clean { tree } => {
+            let parent = state
+                .current
+                .clone()
+                .unwrap_or_else(|| format!("git:{}", state.anchor));
+            let id = format!("step-{}", state.next_step);
+            state.next_step += 1;
+            state.steps.push(Step {
+                id: id.clone(),
+                parent,
+                message,
+                tree: tree.clone(),
+                created_at: current_timestamp(),
+            });
+            state.current = Some(format!("gstep:{id}"));
+            if let Some(collab) = state.collab.as_mut() {
+                collab.shared_head_tree = tree.clone();
+                collab.conflicts.retain(|conflict| conflict.agent != name);
+            }
+            if let Some(agent_mut) = state.find_agent_mut(name) {
+                agent_mut.base_tree = tree.clone();
+                agent_mut.conflict = None;
+                clear_agent_overlay(ctx, agent_mut)?;
+            }
+            save_state(ctx, state)?;
+            println!("Committed agent {name} as gstep:{id}");
+            println!("shared head tree: {tree}");
+        }
+        MergeOutcome::Conflicted {
+            tree,
+            paths,
+            message,
+        } => {
+            let conflict_id = {
+                let collab = require_collab_mut(state)?;
+                let id = format!("conflict-{}", collab.next_conflict);
+                collab.next_conflict += 1;
+                collab.conflicts.retain(|conflict| conflict.agent != name);
+                collab.conflicts.push(Conflict {
+                    id: id.clone(),
+                    agent: name.to_string(),
+                    base_tree: agent.base_tree.clone(),
+                    shared_tree,
+                    agent_tree: tree,
+                    paths,
+                    message: message.clone(),
+                    created_at: current_timestamp(),
+                });
+                id
+            };
+            if let Some(agent_mut) = state.find_agent_mut(name) {
+                agent_mut.conflict = Some(conflict_id.clone());
+            }
+            save_state(ctx, state)?;
+            return Err(Error::new(format!(
+                "agent {name} has merge conflicts ({conflict_id})\n{message}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_status(args: &[String]) -> Result<()> {
+    let (json, all_agents) = parse_status_flags(args)?;
+    let ctx = Context::discover()?;
+    let state = load_state(&ctx)?;
+    if let Some(agent_name) = current_agent_name(&state)? {
+        return cmd_current_agent_status(&ctx, &state, &agent_name, json);
+    }
+    if all_agents {
+        let mut status_args = vec!["--all".to_string()];
+        if json {
+            status_args.push("--json".to_string());
+        }
+        return cmd_agent_status(&status_args);
+    }
     let head = head_commit(&ctx)?;
     let branch = git_optional(&ctx, &["branch", "--show-current"])?.unwrap_or_default();
     let relation = match &head {
@@ -413,6 +642,9 @@ fn cmd_commit(args: &[String]) -> Result<()> {
     let commit_args = parse_commit_args(args)?;
     let ctx = Context::discover()?;
     let mut state = load_state(&ctx)?;
+    if let Some(agent) = current_agent_name(&state)? {
+        return commit_agent_changes(&ctx, &mut state, &agent, commit_args.message);
+    }
     let tree = write_worktree_tree(&ctx)?;
     let parent = parent_for_new_step(&state);
     let id = format!("step-{}", state.next_step);
@@ -752,10 +984,24 @@ fn mcp_tools() -> Vec<String> {
         ),
         mcp_tool(
             "gstep_status",
-            "Show Git macro step and gstep micro step status.",
-            &[],
+            "Show Git macro step and gstep micro step status, or status for an agent context.",
+            &[
+                ("agent", "string", "Optional current agent context."),
+                ("all", "boolean", "Show all agent layers."),
+            ],
             &[],
             true,
+            false,
+        ),
+        mcp_tool(
+            "gstep_fork",
+            "Create an agent layer from the collaboration shared head or a selector.",
+            &[
+                ("name", "string", "Agent name."),
+                ("from", "string", "Optional source selector."),
+            ],
+            &["name"],
+            false,
             false,
         ),
         mcp_tool(
@@ -792,7 +1038,7 @@ fn mcp_tools() -> Vec<String> {
         ),
         mcp_tool(
             "gstep_commit",
-            "Create a gstep micro step from the current worktree. The committing code agent and its session id are recorded automatically (claude via environment, codex via the active session); pass agent/session to override.",
+            "Create a gstep micro step from the current worktree, or commit the current agent layer when one is active. The committing code agent and its session id are recorded automatically (claude via environment, codex via the active session); pass agent/session to override.",
             &[
                 ("message", "string", "Micro step message."),
                 ("agent", "string", "Optional code agent name override, e.g. claude or codex."),
@@ -916,96 +1162,128 @@ fn mcp_call_tool(message: &BTreeMap<String, Json>) -> Result<String> {
         None => &empty,
     };
 
-    let cli_args = mcp_tool_args(&name, arguments)?;
-    let output = run_current_exe(&cli_args)?;
+    let invocation = mcp_tool_args(&name, arguments)?;
+    let output = run_current_exe(&invocation.args, &invocation.envs)?;
     Ok(mcp_tool_result(&output))
 }
 
-fn mcp_tool_args(name: &str, arguments: &BTreeMap<String, Json>) -> Result<Vec<String>> {
-    let mut args = Vec::new();
+struct McpInvocation {
+    args: Vec<String>,
+    envs: Vec<(String, String)>,
+}
+
+impl McpInvocation {
+    fn new() -> Self {
+        Self {
+            args: Vec::new(),
+            envs: Vec::new(),
+        }
+    }
+
+    fn set_agent(&mut self, agent: Option<String>) {
+        if let Some(agent) = agent {
+            self.envs.push(("GSTEP_AGENT".to_string(), agent));
+        }
+    }
+}
+
+fn mcp_tool_args(name: &str, arguments: &BTreeMap<String, Json>) -> Result<McpInvocation> {
+    let mut invocation = McpInvocation::new();
     match name {
         "gstep_begin" => {
-            args.push("begin".to_string());
-            args.push(required_arg(arguments, "name")?);
+            invocation.args.push("begin".to_string());
+            invocation.args.push(required_arg(arguments, "name")?);
             if let Some(anchor) = optional_string_arg(arguments, "anchor")? {
-                args.push("--anchor".to_string());
-                args.push(anchor);
+                invocation.args.push("--anchor".to_string());
+                invocation.args.push(anchor);
             }
         }
         "gstep_status" => {
-            args.push("status".to_string());
-            args.push("--json".to_string());
+            invocation.args.push("status".to_string());
+            if optional_bool_arg(arguments, "all")?.unwrap_or(false) {
+                invocation.args.push("--all".to_string());
+            }
+            invocation.args.push("--json".to_string());
+            invocation.set_agent(optional_string_arg(arguments, "agent")?);
+        }
+        "gstep_fork" => {
+            invocation.args.push("fork".to_string());
+            invocation.args.push(required_arg(arguments, "name")?);
+            if let Some(source) = optional_string_arg(arguments, "from")? {
+                invocation.args.push("--from".to_string());
+                invocation.args.push(source);
+            }
         }
         "gstep_timeline" => {
-            args.push("timeline".to_string());
+            invocation.args.push("timeline".to_string());
             if optional_bool_arg(arguments, "json")?.unwrap_or(true) {
-                args.push("--json".to_string());
+                invocation.args.push("--json".to_string());
             }
         }
         "gstep_show" => {
-            args.push("show".to_string());
-            args.push(required_arg(arguments, "selector")?);
+            invocation.args.push("show".to_string());
+            invocation.args.push(required_arg(arguments, "selector")?);
         }
         "gstep_diff" => {
-            args.push("diff".to_string());
-            args.push(required_arg(arguments, "left")?);
-            args.push(required_arg(arguments, "right")?);
+            invocation.args.push("diff".to_string());
+            invocation.args.push(required_arg(arguments, "left")?);
+            invocation.args.push(required_arg(arguments, "right")?);
             if optional_bool_arg(arguments, "json")?.unwrap_or(false) {
-                args.push("--json".to_string());
+                invocation.args.push("--json".to_string());
             }
         }
         "gstep_commit" => {
-            args.push("commit".to_string());
-            args.push("-m".to_string());
-            args.push(required_arg(arguments, "message")?);
+            invocation.args.push("commit".to_string());
+            invocation.args.push("-m".to_string());
+            invocation.args.push(required_arg(arguments, "message")?);
             if let Some(agent) = optional_string_arg(arguments, "agent")? {
-                args.push("--agent".to_string());
-                args.push(agent);
+                invocation.args.push("--agent".to_string());
+                invocation.args.push(agent);
             }
             if let Some(session) = optional_string_arg(arguments, "session")? {
-                args.push("--session".to_string());
-                args.push(session);
+                invocation.args.push("--session".to_string());
+                invocation.args.push(session);
             }
         }
         "gstep_context" => {
-            args.push("context".to_string());
+            invocation.args.push("context".to_string());
             if let Some(selector) = optional_string_arg(arguments, "selector")? {
-                args.push(selector);
+                invocation.args.push(selector);
             }
-            args.push("--json".to_string());
+            invocation.args.push("--json".to_string());
         }
         "gstep_branch" => {
-            args.push("branch".to_string());
-            args.push(required_arg(arguments, "name")?);
+            invocation.args.push("branch".to_string());
+            invocation.args.push(required_arg(arguments, "name")?);
             if let Some(source) = optional_string_arg(arguments, "from")? {
-                args.push("--from".to_string());
-                args.push(source);
+                invocation.args.push("--from".to_string());
+                invocation.args.push(source);
             }
         }
         "gstep_checkout" => {
-            args.push("checkout".to_string());
+            invocation.args.push("checkout".to_string());
             if optional_bool_arg(arguments, "as_worktree")?.unwrap_or(false) {
-                args.push("--as-worktree".to_string());
+                invocation.args.push("--as-worktree".to_string());
             }
-            args.push(required_arg(arguments, "selector")?);
+            invocation.args.push(required_arg(arguments, "selector")?);
         }
         "gstep_materialize" => {
-            args.push("materialize".to_string());
-            args.push(required_arg(arguments, "selector")?);
-            args.push(required_arg(arguments, "path")?);
+            invocation.args.push("materialize".to_string());
+            invocation.args.push(required_arg(arguments, "selector")?);
+            invocation.args.push(required_arg(arguments, "path")?);
         }
         "gstep_bind" => {
-            args.push("bind".to_string());
-            args.push(required_arg(arguments, "git")?);
-            args.push("--from".to_string());
-            args.push(required_arg(arguments, "from")?);
+            invocation.args.push("bind".to_string());
+            invocation.args.push(required_arg(arguments, "git")?);
+            invocation.args.push("--from".to_string());
+            invocation.args.push(required_arg(arguments, "from")?);
             if optional_bool_arg(arguments, "git_notes")?.unwrap_or(false) {
-                args.push("--git-notes".to_string());
+                invocation.args.push("--git-notes".to_string());
             }
         }
         _ => return Err(Error::new(format!("unknown tool: {name}"))),
     }
-    Ok(args)
+    Ok(invocation)
 }
 
 fn required_arg(arguments: &BTreeMap<String, Json>, name: &str) -> Result<String> {
@@ -1029,12 +1307,14 @@ fn optional_bool_arg(arguments: &BTreeMap<String, Json>, name: &str) -> Result<O
     }
 }
 
-fn run_current_exe(args: &[String]) -> Result<Output> {
+fn run_current_exe(args: &[String], envs: &[(String, String)]) -> Result<Output> {
     let executable = env::current_exe()?;
-    Ok(Command::new(executable)
-        .current_dir(env::current_dir()?)
-        .args(args)
-        .output()?)
+    let mut command = Command::new(executable);
+    command.current_dir(env::current_dir()?).args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    Ok(command.output()?)
 }
 
 fn mcp_tool_result(output: &Output) -> String {
@@ -1073,15 +1353,17 @@ fn mcp_error(id: Option<&Json>, code: i64, message: &str) -> String {
     )
 }
 
-fn parse_only_json_flag(args: &[String], command: &str) -> Result<bool> {
+fn parse_status_flags(args: &[String]) -> Result<(bool, bool)> {
     let mut json = false;
+    let mut all_agents = false;
     for arg in args {
         match arg.as_str() {
             "--json" => json = true,
-            other => return Err(Error::new(format!("unknown {command} option: {other}"))),
+            "--all" => all_agents = true,
+            other => return Err(Error::new(format!("unknown status option: {other}"))),
         }
     }
-    Ok(json)
+    Ok((json, all_agents))
 }
 
 struct CommitArgs {
@@ -1154,6 +1436,7 @@ struct State {
     next_step: usize,
     steps: Vec<Step>,
     branches: Vec<Branch>,
+    collab: Option<Collab>,
 }
 
 impl State {
@@ -1163,6 +1446,22 @@ impl State {
 
     fn find_branch(&self, name: &str) -> Option<&Branch> {
         self.branches.iter().find(|branch| branch.name == name)
+    }
+
+    fn find_agent(&self, name: &str) -> Option<&Agent> {
+        self.collab
+            .as_ref()?
+            .agents
+            .iter()
+            .find(|agent| agent.name == name)
+    }
+
+    fn find_agent_mut(&mut self, name: &str) -> Option<&mut Agent> {
+        self.collab
+            .as_mut()?
+            .agents
+            .iter_mut()
+            .find(|agent| agent.name == name)
     }
 }
 
@@ -1183,6 +1482,38 @@ struct Step {
 struct Branch {
     name: String,
     target: String,
+}
+
+#[derive(Clone, Debug)]
+struct Collab {
+    shared_head_tree: String,
+    next_conflict: usize,
+    agents: Vec<Agent>,
+    conflicts: Vec<Conflict>,
+}
+
+#[derive(Clone, Debug)]
+struct Agent {
+    name: String,
+    base_tree: String,
+    upper_dir: String,
+    tombstones_path: String,
+    index_path: String,
+    view_path: Option<String>,
+    conflict: Option<String>,
+    created_at: String,
+}
+
+#[derive(Clone, Debug)]
+struct Conflict {
+    id: String,
+    agent: String,
+    base_tree: String,
+    shared_tree: String,
+    agent_tree: String,
+    paths: Vec<String>,
+    message: String,
+    created_at: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1224,6 +1555,43 @@ fn save_bindings(ctx: &Context, bindings: &Bindings) -> Result<()> {
     fs::create_dir_all(&ctx.gstep_dir)?;
     fs::write(ctx.bindings_path(), bindings_to_json(bindings))?;
     Ok(())
+}
+
+fn require_collab(state: &State) -> Result<&Collab> {
+    state
+        .collab
+        .as_ref()
+        .ok_or_else(|| Error::new("No gstep agent timeline found. Run gstep begin <name> first."))
+}
+
+fn require_collab_mut(state: &mut State) -> Result<&mut Collab> {
+    state
+        .collab
+        .as_mut()
+        .ok_or_else(|| Error::new("No gstep agent timeline found. Run gstep begin <name> first."))
+}
+
+fn current_agent_name(state: &State) -> Result<Option<String>> {
+    let Some(collab) = state.collab.as_ref() else {
+        return Ok(None);
+    };
+    if let Some(name) = env::var("GSTEP_AGENT").ok().filter(|name| !name.is_empty()) {
+        if collab.agents.iter().any(|agent| agent.name == name) {
+            return Ok(Some(name));
+        }
+        return Err(Error::new(format!(
+            "unknown current agent from GSTEP_AGENT: {name}"
+        )));
+    }
+    let cwd = env::current_dir()?;
+    for agent in &collab.agents {
+        if let Some(view_path) = &agent.view_path
+            && cwd.starts_with(view_path)
+        {
+            return Ok(Some(agent.name.clone()));
+        }
+    }
+    Ok(None)
 }
 
 impl State {
@@ -1273,14 +1641,21 @@ impl State {
             .collect::<Vec<_>>()
             .join(",\n");
 
+        let collab = self
+            .collab
+            .as_ref()
+            .map(Collab::to_json)
+            .unwrap_or_else(|| "null".to_string());
+
         format!(
-            "{{\n  \"session\": {},\n  \"anchor\": {},\n  \"current\": {},\n  \"next_step\": {},\n  \"steps\": [\n{}\n  ],\n  \"branches\": [\n{}\n  ]\n}}\n",
+            "{{\n  \"session\": {},\n  \"anchor\": {},\n  \"current\": {},\n  \"next_step\": {},\n  \"steps\": [\n{}\n  ],\n  \"branches\": [\n{}\n  ],\n  \"collab\": {}\n}}\n",
             json_string(&self.session),
             json_string(&self.anchor),
             current,
             self.next_step,
             steps,
-            branches
+            branches,
+            collab
         )
     }
 
@@ -1322,6 +1697,11 @@ impl State {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        let collab = match object.get("collab") {
+            Some(Json::Object(collab)) => Some(Collab::from_object(collab)?),
+            Some(Json::Null) | None => None,
+            Some(_) => return Err(Error::new("collab must be a JSON object or null")),
+        };
 
         Ok(Self {
             session,
@@ -1330,6 +1710,132 @@ impl State {
             next_step,
             steps,
             branches,
+            collab,
+        })
+    }
+}
+
+impl Collab {
+    fn to_json(&self) -> String {
+        let agents = self
+            .agents
+            .iter()
+            .map(Agent::to_json)
+            .collect::<Vec<_>>()
+            .join(",\n");
+        let conflicts = self
+            .conflicts
+            .iter()
+            .map(Conflict::to_json)
+            .collect::<Vec<_>>()
+            .join(",\n");
+        format!(
+            "{{\"shared_head_tree\": {}, \"next_conflict\": {}, \"agents\": [\n{}\n  ], \"conflicts\": [\n{}\n  ]}}",
+            json_string(&self.shared_head_tree),
+            self.next_conflict,
+            agents,
+            conflicts
+        )
+    }
+
+    fn from_object(object: &BTreeMap<String, Json>) -> Result<Self> {
+        let shared_head_tree = object_string(object, "shared_head_tree")?;
+        let next_conflict = object_number(object, "next_conflict")? as usize;
+        let agents = object_array(object, "agents")?
+            .iter()
+            .map(|value| {
+                let Json::Object(agent) = value else {
+                    return Err(Error::new("agent entry must be a JSON object"));
+                };
+                Agent::from_object(agent)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let conflicts = object_array(object, "conflicts")?
+            .iter()
+            .map(|value| {
+                let Json::Object(conflict) = value else {
+                    return Err(Error::new("conflict entry must be a JSON object"));
+                };
+                Conflict::from_object(conflict)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            shared_head_tree,
+            next_conflict,
+            agents,
+            conflicts,
+        })
+    }
+}
+
+impl Agent {
+    fn to_json(&self) -> String {
+        format!(
+            "    {{\"name\": {}, \"base_tree\": {}, \"upper_dir\": {}, \"tombstones_path\": {}, \"index_path\": {}, \"view_path\": {}, \"conflict\": {}, \"created_at\": {}}}",
+            json_string(&self.name),
+            json_string(&self.base_tree),
+            json_string(&self.upper_dir),
+            json_string(&self.tombstones_path),
+            json_string(&self.index_path),
+            optional_json_string(self.view_path.as_deref()),
+            optional_json_string(self.conflict.as_deref()),
+            json_string(&self.created_at)
+        )
+    }
+
+    fn from_object(object: &BTreeMap<String, Json>) -> Result<Self> {
+        Ok(Self {
+            name: object_string(object, "name")?,
+            base_tree: object_string(object, "base_tree")?,
+            upper_dir: object_string(object, "upper_dir")?,
+            tombstones_path: object_string(object, "tombstones_path")?,
+            index_path: object_string(object, "index_path")?,
+            view_path: object_optional_string(object, "view_path")?
+                .or(object_optional_string(object, "mount_path")?),
+            conflict: object_optional_string(object, "conflict")?,
+            created_at: object_string(object, "created_at")?,
+        })
+    }
+}
+
+impl Conflict {
+    fn to_json(&self) -> String {
+        let paths = self
+            .paths
+            .iter()
+            .map(|path| json_string(path))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "    {{\"id\": {}, \"agent\": {}, \"base_tree\": {}, \"shared_tree\": {}, \"agent_tree\": {}, \"paths\": [{}], \"message\": {}, \"created_at\": {}}}",
+            json_string(&self.id),
+            json_string(&self.agent),
+            json_string(&self.base_tree),
+            json_string(&self.shared_tree),
+            json_string(&self.agent_tree),
+            paths,
+            json_string(&self.message),
+            json_string(&self.created_at)
+        )
+    }
+
+    fn from_object(object: &BTreeMap<String, Json>) -> Result<Self> {
+        let paths = object_array(object, "paths")?
+            .iter()
+            .map(|value| match value {
+                Json::String(path) => Ok(path.clone()),
+                _ => Err(Error::new("conflict path must be a JSON string")),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            id: object_string(object, "id")?,
+            agent: object_string(object, "agent")?,
+            base_tree: object_string(object, "base_tree")?,
+            shared_tree: object_string(object, "shared_tree")?,
+            agent_tree: object_string(object, "agent_tree")?,
+            paths,
+            message: object_string(object, "message")?,
+            created_at: object_string(object, "created_at")?,
         })
     }
 }
@@ -1519,6 +2025,340 @@ fn parent_for_new_step(state: &State) -> String {
         }
         None => format!("git:{}", state.anchor),
     }
+}
+
+fn default_agent_view_path(ctx: &Context, state: &State, agent: &str) -> Result<String> {
+    Ok(ctx
+        .gstep_dir
+        .join("views")
+        .join(view_path_component(&state.session))
+        .join(view_path_component(agent))
+        .display()
+        .to_string())
+}
+
+fn view_path_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+fn agent_status_json(ctx: &Context, collab: &Collab, agent: &Agent) -> Result<String> {
+    let tree = agent_tree(ctx, agent)?;
+    Ok(format!(
+        "    {{\"name\": {}, \"base_tree\": {}, \"shared_head_tree\": {}, \"view_tree\": {}, \"dirty\": {}, \"view_path\": {}, \"conflict\": {}}}",
+        json_string(&agent.name),
+        json_string(&agent.base_tree),
+        json_string(&collab.shared_head_tree),
+        json_string(&tree),
+        tree != agent.base_tree,
+        optional_json_string(agent.view_path.as_deref()),
+        optional_json_string(agent.conflict.as_deref())
+    ))
+}
+
+fn cmd_current_agent_status(ctx: &Context, state: &State, name: &str, json: bool) -> Result<()> {
+    let collab = require_collab(state)?;
+    let agent = state
+        .find_agent(name)
+        .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?;
+    if json {
+        println!(
+            "{{\n  \"shared_head_tree\": {},\n  \"agent\": {}\n}}",
+            json_string(&collab.shared_head_tree),
+            agent_status_json(ctx, collab, agent)?
+        );
+        return Ok(());
+    }
+    let tree = agent_tree(ctx, agent)?;
+    println!("Agent:");
+    println!("  name:     {}", agent.name);
+    println!("  base:     {}", agent.base_tree);
+    println!("  shared:   {}", collab.shared_head_tree);
+    println!("  view:     {tree}");
+    println!(
+        "  dirty:    {}",
+        if tree != agent.base_tree { "yes" } else { "no" }
+    );
+    println!(
+        "  conflict: {}",
+        agent.conflict.as_deref().unwrap_or("none")
+    );
+    Ok(())
+}
+
+fn agent_tree(ctx: &Context, agent: &Agent) -> Result<String> {
+    fs::create_dir_all(ctx.gstep_dir.join("tmp"))?;
+    let index = temp_index_path(ctx);
+    let index_ref = index.as_os_str();
+    git_env(
+        ctx,
+        &["read-tree", agent.base_tree.as_str()],
+        &[("GIT_INDEX_FILE", index_ref)],
+    )?;
+
+    for path in read_tombstones(ctx, agent)? {
+        remove_index_path(ctx, index_ref, &path)?;
+    }
+
+    let upper_dir = ctx.gstep_dir.join(&agent.upper_dir);
+    if upper_dir.exists() {
+        for path in list_upper_files(&upper_dir)? {
+            add_upper_path_to_index(ctx, index_ref, &upper_dir, &path)?;
+        }
+    }
+
+    let tree = git_env(ctx, &["write-tree"], &[("GIT_INDEX_FILE", index_ref)])?;
+    let _ = fs::remove_file(index);
+    Ok(tree.trim().to_string())
+}
+
+fn read_tombstones(ctx: &Context, agent: &Agent) -> Result<Vec<String>> {
+    let path = ctx.gstep_dir.join(&agent.tombstones_path);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    Ok(fs::read_to_string(path)?
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn list_upper_files(root: &Path) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    collect_upper_files(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_upper_files(root: &Path, dir: &Path, files: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            collect_upper_files(root, &path, files)?;
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| Error::new(error.to_string()))?;
+        files.push(path_to_git_path(relative)?);
+    }
+    Ok(())
+}
+
+fn add_upper_path_to_index(
+    ctx: &Context,
+    index_ref: &OsStr,
+    upper_dir: &Path,
+    path: &str,
+) -> Result<()> {
+    let full_path = upper_dir.join(path);
+    let metadata = fs::symlink_metadata(&full_path)?;
+    let (mode, oid) = if metadata.file_type().is_symlink() {
+        let target = fs::read_link(&full_path)?;
+        let bytes = target.to_string_lossy().into_owned();
+        ("120000", hash_blob_bytes(ctx, bytes.as_bytes())?)
+    } else {
+        let mode = executable_mode(&metadata);
+        let full_path = full_path
+            .to_str()
+            .ok_or_else(|| Error::new("upper file path is not valid UTF-8"))?;
+        (
+            mode,
+            git(ctx, &["hash-object", "-w", full_path])?
+                .trim()
+                .to_string(),
+        )
+    };
+    let cacheinfo = format!("{mode},{oid},{path}");
+    git_env(
+        ctx,
+        &["update-index", "--add", "--cacheinfo", cacheinfo.as_str()],
+        &[("GIT_INDEX_FILE", index_ref)],
+    )?;
+    Ok(())
+}
+
+fn executable_mode(metadata: &fs::Metadata) -> &'static str {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o111 != 0 {
+            return "100755";
+        }
+    }
+    "100644"
+}
+
+fn remove_index_path(ctx: &Context, index_ref: &OsStr, path: &str) -> Result<()> {
+    let bytes = git_env_bytes(
+        ctx,
+        &["ls-files", "-z", "--", path],
+        &[("GIT_INDEX_FILE", index_ref)],
+    )?;
+    let entries = split_nul(&bytes);
+    if entries.is_empty() {
+        git_env(
+            ctx,
+            &["update-index", "--force-remove", "--", path],
+            &[("GIT_INDEX_FILE", index_ref)],
+        )?;
+        return Ok(());
+    }
+    for entry in entries {
+        git_env(
+            ctx,
+            &["update-index", "--force-remove", "--", entry.as_str()],
+            &[("GIT_INDEX_FILE", index_ref)],
+        )?;
+    }
+    Ok(())
+}
+
+fn path_to_git_path(path: &Path) -> Result<String> {
+    let parts = path
+        .components()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_str()
+                .ok_or_else(|| Error::new("path is not valid UTF-8"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(parts.join("/"))
+}
+
+fn clear_agent_overlay(ctx: &Context, agent: &Agent) -> Result<()> {
+    let upper_dir = ctx.gstep_dir.join(&agent.upper_dir);
+    if upper_dir.exists() {
+        fs::remove_dir_all(&upper_dir)?;
+    }
+    fs::create_dir_all(&upper_dir)?;
+    fs::write(ctx.gstep_dir.join(&agent.tombstones_path), "")?;
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum MergeOutcome {
+    Clean {
+        tree: String,
+    },
+    Conflicted {
+        tree: String,
+        paths: Vec<String>,
+        message: String,
+    },
+}
+
+fn merge_agent_tree(
+    ctx: &Context,
+    base_tree: &str,
+    shared_tree: &str,
+    agent_tree: &str,
+) -> Result<MergeOutcome> {
+    let base_commit = commit_tree_for_merge(ctx, base_tree, "base")?;
+    let shared_commit = commit_tree_for_merge(ctx, shared_tree, "shared")?;
+    let agent_commit = commit_tree_for_merge(ctx, agent_tree, "agent")?;
+    let merge_base = format!("--merge-base={base_commit}");
+    let output = run_git_raw(
+        &ctx.root,
+        &[
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--messages",
+            merge_base.as_str(),
+            shared_commit.as_str(),
+            agent_commit.as_str(),
+        ],
+        &[],
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match output.status.code() {
+        Some(0) => Ok(MergeOutcome::Clean {
+            tree: first_output_line(&stdout)?,
+        }),
+        Some(1) => {
+            let (tree, paths, message) = parse_merge_conflict_output(&stdout)?;
+            Ok(MergeOutcome::Conflicted {
+                tree,
+                paths,
+                message,
+            })
+        }
+        _ => Err(Error::new(format!(
+            "git merge-tree failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))),
+    }
+}
+
+fn commit_tree_for_merge(ctx: &Context, tree: &str, label: &str) -> Result<String> {
+    let message = format!("gstep merge input {label}");
+    let envs = [
+        ("GIT_AUTHOR_NAME", OsStr::new("gstep")),
+        ("GIT_AUTHOR_EMAIL", OsStr::new("gstep@example.invalid")),
+        ("GIT_COMMITTER_NAME", OsStr::new("gstep")),
+        ("GIT_COMMITTER_EMAIL", OsStr::new("gstep@example.invalid")),
+        ("GIT_CONFIG_GLOBAL", OsStr::new("/dev/null")),
+    ];
+    Ok(
+        git_env(ctx, &["commit-tree", tree, "-m", message.as_str()], &envs)?
+            .trim()
+            .to_string(),
+    )
+}
+
+fn first_output_line(output: &str) -> Result<String> {
+    output
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| Error::new("git merge-tree did not return a tree"))
+}
+
+fn parse_merge_conflict_output(output: &str) -> Result<(String, Vec<String>, String)> {
+    let mut lines = output.lines();
+    let tree = lines
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .ok_or_else(|| Error::new("git merge-tree conflict output did not include a tree"))?
+        .to_string();
+    let mut paths = Vec::new();
+    let mut messages = Vec::new();
+    let mut in_messages = false;
+    for line in lines {
+        if line.trim().is_empty() {
+            in_messages = true;
+            continue;
+        }
+        if in_messages {
+            messages.push(line.to_string());
+        } else {
+            paths.push(line.to_string());
+        }
+    }
+    let message = if messages.is_empty() {
+        output.to_string()
+    } else {
+        messages.join("\n")
+    };
+    Ok((tree, paths, message))
 }
 
 fn write_worktree_tree(ctx: &Context) -> Result<String> {
@@ -2346,6 +3186,15 @@ fn git_env(ctx: &Context, args: &[&str], envs: &[(&str, &OsStr)]) -> Result<Stri
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn git_env_bytes(ctx: &Context, args: &[&str], envs: &[(&str, &OsStr)]) -> Result<Vec<u8>> {
+    Ok(run_git(&ctx.root, args, envs)?.stdout)
+}
+
+fn hash_blob_bytes(ctx: &Context, bytes: &[u8]) -> Result<String> {
+    let output = run_git_with_input(&ctx.root, &["hash-object", "-w", "--stdin"], &[], bytes)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn git_optional(ctx: &Context, args: &[&str]) -> Result<Option<String>> {
     let output = run_git_raw(&ctx.root, args, &[])?;
     if output.status.success() {
@@ -2377,7 +3226,35 @@ fn run_git(cwd: &Path, args: &[&str], envs: &[(&str, &OsStr)]) -> Result<Output>
     }
 }
 
+fn run_git_with_input(
+    cwd: &Path,
+    args: &[&str],
+    envs: &[(&str, &OsStr)],
+    input: &[u8],
+) -> Result<Output> {
+    let output = run_git_raw_with_input(cwd, args, envs, Some(input))?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(Error::new(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            stderr.trim()
+        )))
+    }
+}
+
 fn run_git_raw(cwd: &Path, args: &[&str], envs: &[(&str, &OsStr)]) -> Result<Output> {
+    run_git_raw_with_input(cwd, args, envs, None)
+}
+
+fn run_git_raw_with_input(
+    cwd: &Path,
+    args: &[&str],
+    envs: &[(&str, &OsStr)],
+    input: Option<&[u8]>,
+) -> Result<Output> {
     let mut command = Command::new("git");
     command.arg("-C").arg(cwd);
     for arg in args {
@@ -2386,7 +3263,20 @@ fn run_git_raw(cwd: &Path, args: &[&str], envs: &[(&str, &OsStr)]) -> Result<Out
     for (key, value) in envs {
         command.env(key, value);
     }
-    Ok(command.output()?)
+    if input.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    }
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let mut child = command.spawn()?;
+    if let Some(input) = input {
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| Error::new("failed to open git stdin"))?;
+        stdin.write_all(input)?;
+    }
+    Ok(child.wait_with_output()?)
 }
 
 #[derive(Clone, Debug)]
@@ -2608,6 +3498,10 @@ fn object_array<'a>(object: &'a BTreeMap<String, Json>, key: &str) -> Result<&'a
 
 fn json_string(value: &str) -> String {
     format!("\"{}\"", json_escape(value))
+}
+
+fn optional_json_string(value: Option<&str>) -> String {
+    value.map(json_string).unwrap_or_else(|| "null".to_string())
 }
 
 fn json_value(value: &Json) -> String {

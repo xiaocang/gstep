@@ -9,6 +9,8 @@ description: Work with gstep, a Git commit-aware micro-step layer for AI coding 
 
 Use `gstep` to manage temporary micro steps between real Git commits. Git remains the formal history; gstep stores local snapshots under `.git/gstep/` and exposes both a CLI and MCP server for checkpointing, inspecting, diffing, branching, and materializing intermediate work.
 
+For multi-agent collaboration, `gstep` can keep a shared logical repository with one transparent writable layer per agent. Agents should still use native commands (`gstep status`, `gstep commit`, `gstep diff`, and related selector commands) from their agent context instead of a separate `agent` command surface.
+
 ## Safety Rules
 
 - Treat Git commits as the durable project history and gstep steps as local scratch checkpoints.
@@ -23,6 +25,7 @@ Use `gstep` to manage temporary micro steps between real Git commits. Git remain
 If the Codex session has a configured `gstep` MCP server, prefer the MCP tools for gstep operations:
 
 - `gstep_begin`
+- `gstep_fork`
 - `gstep_status`
 - `gstep_timeline`
 - `gstep_show`
@@ -77,6 +80,25 @@ This prints the originating agent, its session id, the transcript path, and a
 digest of the conversation (the original task plus recent turns) so you can
 understand what was being done and continue it. Use this before resuming or
 building on a step you did not create yourself.
+
+### Multi-Agent Collaboration
+
+Use this when several agents need isolated views over the same logical repository.
+
+```sh
+gstep begin <name>
+gstep fork <agent-name>
+gstep status --all --json
+```
+
+Do not use a top-level `gstep agent` command. Native commands are agent-aware through the current process context, such as `GSTEP_AGENT` or a cwd under the agent view path:
+
+```sh
+GSTEP_AGENT=<agent-name> gstep status --json
+GSTEP_AGENT=<agent-name> gstep commit -m "short checkpoint message"
+```
+
+`gstep commit` merges the current agent's layer into the collaboration shared head. Non-conflicting changes are merged automatically; conflicts are reported and recorded without updating the shared head.
 
 ### Inspect Timeline and Content
 

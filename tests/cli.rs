@@ -164,6 +164,7 @@ fn mcp_server_lists_and_calls_project_tools() {
 
     assert!(output.contains("\"protocolVersion\":\"2025-11-25\""));
     assert!(output.contains("\"name\":\"gstep_status\""));
+    assert!(output.contains("\"name\":\"gstep_fork\""));
     assert!(output.contains("\"isError\":false"));
     assert!(output.contains("mcp-session"));
 }
@@ -259,6 +260,55 @@ fn commit_auto_detects_active_codex_session() {
     );
 }
 
+#[test]
+fn agent_timeline_uses_native_commit_for_current_agent() {
+    let repo = TestRepo::new("agent-native");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.write(".git/gstep/agents/alpha/upper/app.txt", "alpha\n");
+
+    let commit = repo.gstep_agent("alpha", &["commit", "-m", "alpha change"]);
+    assert!(commit.contains("Committed agent alpha as gstep:step-1"));
+
+    let status = repo.gstep_agent("alpha", &["status", "--json"]);
+    assert!(status.contains("\"dirty\": false"));
+    assert!(status.contains("\"name\": \"alpha\""));
+
+    let out = repo.path.join("merged");
+    repo.gstep(&["materialize", "gstep:@", out.to_str().unwrap()]);
+    assert_eq!(fs::read_to_string(out.join("app.txt")).unwrap(), "alpha\n");
+
+    let no_agent_command = repo.gstep_fail(&["agent", "status"]);
+    assert!(no_agent_command.contains("unknown command: agent"));
+}
+
+#[test]
+fn agent_timeline_reports_conflicts_at_commit_time() {
+    let repo = TestRepo::new("agent-conflict");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["fork", "beta"]);
+
+    repo.write(".git/gstep/agents/alpha/upper/app.txt", "alpha\n");
+    repo.gstep_agent("alpha", &["commit", "-m", "alpha change"]);
+
+    repo.write(".git/gstep/agents/beta/upper/app.txt", "beta\n");
+    let conflict = repo.gstep_agent_fail("beta", &["commit", "-m", "beta change"]);
+    assert!(conflict.contains("agent beta has merge conflicts"));
+    assert!(conflict.contains("app.txt"));
+
+    let status = repo.gstep(&["status", "--all", "--json"]);
+    assert!(status.contains("\"conflict\": \"conflict-1\""));
+}
+
 struct TestRepo {
     path: PathBuf,
 }
@@ -300,6 +350,7 @@ impl TestRepo {
             .arg("-C")
             .arg(&self.path)
             .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .output()
             .unwrap();
         assert_success("git", args, &output);
@@ -309,9 +360,11 @@ impl TestRepo {
     }
 
     fn gstep(&self, args: &[&str]) -> String {
-        let output = self.gstep_command(args).output().unwrap();
-        assert_success("gstep", args, &output);
-        String::from_utf8_lossy(&output.stdout).to_string()
+        self.gstep_with_env(args, &[])
+    }
+
+    fn gstep_agent(&self, agent: &str, args: &[&str]) -> String {
+        self.gstep_with_env(args, &[("GSTEP_AGENT", agent)])
     }
 
     /// Build a gstep command with the host's code-agent environment scrubbed,
@@ -330,10 +383,8 @@ impl TestRepo {
     /// Run gstep with the Claude env scrubbed and `CODEX_HOME` pointed at a
     /// synthetic Codex home, to exercise Codex session auto-detection.
     fn gstep_with_codex_home(&self, args: &[&str], codex_home: &PathBuf) -> String {
-        let output = Command::new(bin())
-            .current_dir(&self.path)
-            .args(args)
-            .env_remove("CLAUDE_CODE_SESSION_ID")
+        let output = self
+            .gstep_command(args)
             .env("CODEX_HOME", codex_home)
             .output()
             .unwrap();
@@ -341,8 +392,30 @@ impl TestRepo {
         String::from_utf8_lossy(&output.stdout).to_string()
     }
 
+    fn gstep_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> String {
+        let mut command = self.gstep_command(args);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command.output().unwrap();
+        assert_success("gstep", args, &output);
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
     fn gstep_fail(&self, args: &[&str]) -> String {
-        let output = self.gstep_command(args).output().unwrap();
+        self.gstep_fail_with_env(args, &[])
+    }
+
+    fn gstep_agent_fail(&self, agent: &str, args: &[&str]) -> String {
+        self.gstep_fail_with_env(args, &[("GSTEP_AGENT", agent)])
+    }
+
+    fn gstep_fail_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> String {
+        let mut command = self.gstep_command(args);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command.output().unwrap();
         assert!(
             !output.status.success(),
             "expected gstep {:?} to fail, stdout:\n{}\nstderr:\n{}",

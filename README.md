@@ -4,6 +4,8 @@
 
 Git commits remain the formal project history. `gstep` adds temporary micro steps between those commits so an agent or developer can checkpoint, compare, branch, inspect, and materialize intermediate work without polluting the Git commit log.
 
+For multi-agent workflows, `gstep` can keep one shared logical repository while giving each agent its own transparent writable layer. Agents use the normal commands (`gstep status`, `gstep commit`, `gstep diff`, and so on) from their agent context; conflicts are deferred until commit time.
+
 ## Status
 
 This is an early prototype. It is designed to be small, local-first, and dependency-free.
@@ -119,11 +121,36 @@ Optionally also write the binding as Git notes:
 gstep bind git:HEAD --from gstep:step-1 --git-notes
 ```
 
+## Multi-Agent Collaboration
+
+Start a session anchored at the current Git commit. This also initializes the shared agent timeline:
+
+```sh
+gstep begin team
+```
+
+Create agent layers:
+
+```sh
+gstep fork agent-a
+gstep fork agent-b
+```
+
+Inside an agent process context, native commands operate on the agent layer. The current prototype recognizes the agent from `GSTEP_AGENT` or from the current directory being under the agent view path:
+
+```sh
+GSTEP_AGENT=agent-a gstep status
+GSTEP_AGENT=agent-a gstep commit -m "agent-a change"
+```
+
+`gstep commit` merges the agent layer into the collaboration shared head. Non-overlapping changes are merged automatically. Conflicting edits are recorded in `.git/gstep/state.json`, the shared head is left unchanged, and the agent can keep editing before retrying the same native `gstep commit`.
+
 ## Commands
 
 ```text
 gstep begin <name> [--anchor git:<rev>]
-gstep status [--json]
+gstep fork <name> [--from <selector>]
+gstep status [--all] [--json]
 gstep timeline [--graph] [--include-git] [--json]
 gstep log [--steps-only] [--include-git]
 gstep show <selector>
@@ -192,6 +219,7 @@ Exposed tools include:
 
 ```text
 gstep_begin
+gstep_fork
 gstep_status
 gstep_timeline
 gstep_show
@@ -229,6 +257,8 @@ The main files are:
 ```text
 .git/gstep/state.json
 .git/gstep/bindings.json
+.git/gstep/agents/<name>/upper/
+.git/gstep/agents/<name>/tombstones
 .git/gstep/shadow.git/objects/info/alternates
 ```
 
