@@ -48,6 +48,7 @@ fn run() -> Result<()> {
         "timeline" => cmd_timeline(&args[1..]),
         "log" => cmd_log(&args[1..]),
         "show" => cmd_show(&args[1..]),
+        "context" => cmd_context(&args[1..]),
         "diff" => cmd_diff(&args[1..]),
         "commit" => cmd_commit(&args[1..]),
         "branch" => cmd_branch(&args[1..]),
@@ -75,8 +76,9 @@ Usage:\n\
   gstep timeline [--graph] [--json]\n\
   gstep log [--steps-only] [--include-git]\n\
   gstep show <selector>\n\
+  gstep context [<selector>] [--json]\n\
   gstep diff <selector-a> <selector-b> [--json]\n\
-  gstep commit -m <message>\n\
+  gstep commit -m <message> [--agent <name>] [--session <id>]\n\
   gstep branch <name> [--from <selector>]\n\
   gstep checkout gstep:<step-or-branch>\n\
   gstep checkout --as-worktree <selector>\n\
@@ -347,6 +349,13 @@ fn cmd_show(args: &[String]) -> Result<()> {
             println!("parent {}", step.parent);
             println!("tree {}", step.tree);
             println!("message {}", step.message);
+            if let Some(agent) = &step.agent {
+                println!("agent {agent}");
+            }
+            if let Some(session_id) = &step.session_id {
+                println!("session {session_id}");
+                println!("(run `gstep context gstep:{}` to recover its session)", step.id);
+            }
         }
         ResolvedKind::GstepBase => {
             println!("Gstep base");
@@ -401,25 +410,36 @@ fn cmd_diff(args: &[String]) -> Result<()> {
 }
 
 fn cmd_commit(args: &[String]) -> Result<()> {
-    let message = parse_message_arg(args)?;
+    let commit_args = parse_commit_args(args)?;
     let ctx = Context::discover()?;
     let mut state = load_state(&ctx)?;
     let tree = write_worktree_tree(&ctx)?;
     let parent = parent_for_new_step(&state);
     let id = format!("step-{}", state.next_step);
     state.next_step += 1;
+
+    let identity = resolve_commit_identity(&ctx, &commit_args);
     let step = Step {
         id: id.clone(),
         parent,
-        message,
+        message: commit_args.message,
         tree,
         created_at: current_timestamp(),
+        agent: identity.as_ref().map(|i| i.agent.clone()),
+        session_id: identity.as_ref().and_then(|i| i.session_id.clone()),
     };
     state.current = Some(format!("gstep:{id}"));
     state.steps.push(step);
     save_state(&ctx, &state)?;
 
     println!("Created gstep micro step gstep:{id}");
+    match &identity {
+        Some(i) => match &i.session_id {
+            Some(sid) => println!("agent: {} session: {}", i.agent, sid),
+            None => println!("agent: {} (no session id detected)", i.agent),
+        },
+        None => {}
+    }
     Ok(())
 }
 
@@ -772,10 +792,22 @@ fn mcp_tools() -> Vec<String> {
         ),
         mcp_tool(
             "gstep_commit",
-            "Create a gstep micro step from the current worktree.",
-            &[("message", "string", "Micro step message.")],
+            "Create a gstep micro step from the current worktree. The committing code agent and its session id are recorded automatically (claude via environment, codex via the active session); pass agent/session to override.",
+            &[
+                ("message", "string", "Micro step message."),
+                ("agent", "string", "Optional code agent name override, e.g. claude or codex."),
+                ("session", "string", "Optional session id override for the committing agent."),
+            ],
             &["message"],
             false,
+            false,
+        ),
+        mcp_tool(
+            "gstep_context",
+            "Recover the originating agent's session context for a gstep micro step, so a different agent can read what was being done and continue. Returns the agent, session id, transcript path, and a digest of conversation turns.",
+            &[("selector", "string", "Step selector (default gstep:@).")],
+            &[],
+            true,
             false,
         ),
         mcp_tool(
@@ -926,6 +958,21 @@ fn mcp_tool_args(name: &str, arguments: &BTreeMap<String, Json>) -> Result<Vec<S
             args.push("commit".to_string());
             args.push("-m".to_string());
             args.push(required_arg(arguments, "message")?);
+            if let Some(agent) = optional_string_arg(arguments, "agent")? {
+                args.push("--agent".to_string());
+                args.push(agent);
+            }
+            if let Some(session) = optional_string_arg(arguments, "session")? {
+                args.push("--session".to_string());
+                args.push(session);
+            }
+        }
+        "gstep_context" => {
+            args.push("context".to_string());
+            if let Some(selector) = optional_string_arg(arguments, "selector")? {
+                args.push(selector);
+            }
+            args.push("--json".to_string());
         }
         "gstep_branch" => {
             args.push("branch".to_string());
@@ -1037,8 +1084,16 @@ fn parse_only_json_flag(args: &[String], command: &str) -> Result<bool> {
     Ok(json)
 }
 
-fn parse_message_arg(args: &[String]) -> Result<String> {
+struct CommitArgs {
+    message: String,
+    agent: Option<String>,
+    session_id: Option<String>,
+}
+
+fn parse_commit_args(args: &[String]) -> Result<CommitArgs> {
     let mut message = None;
+    let mut agent = None;
+    let mut session_id = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1050,11 +1105,32 @@ fn parse_message_arg(args: &[String]) -> Result<String> {
                         .clone(),
                 );
             }
+            "--agent" => {
+                index += 1;
+                agent = Some(
+                    args.get(index)
+                        .ok_or_else(|| Error::new("--agent requires a value"))?
+                        .clone(),
+                );
+            }
+            "--session" => {
+                index += 1;
+                session_id = Some(
+                    args.get(index)
+                        .ok_or_else(|| Error::new("--session requires a value"))?
+                        .clone(),
+                );
+            }
             other => return Err(Error::new(format!("unknown commit option: {other}"))),
         }
         index += 1;
     }
-    message.ok_or_else(|| Error::new("commit requires -m <message>"))
+    let message = message.ok_or_else(|| Error::new("commit requires -m <message>"))?;
+    Ok(CommitArgs {
+        message,
+        agent,
+        session_id,
+    })
 }
 
 fn validate_name(name: &str) -> Result<()> {
@@ -1097,6 +1173,10 @@ struct Step {
     message: String,
     tree: String,
     created_at: String,
+    // Cross-agent handoff: which code agent created this step, and its session id.
+    // Both optional for backward compatibility with states written before this feature.
+    agent: Option<String>,
+    session_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1157,13 +1237,25 @@ impl State {
             .steps
             .iter()
             .map(|step| {
+                let agent = step
+                    .agent
+                    .as_ref()
+                    .map(|value| json_string(value))
+                    .unwrap_or_else(|| "null".to_string());
+                let session_id = step
+                    .session_id
+                    .as_ref()
+                    .map(|value| json_string(value))
+                    .unwrap_or_else(|| "null".to_string());
                 format!(
-                    "    {{\"id\": {}, \"parent\": {}, \"message\": {}, \"tree\": {}, \"created_at\": {}}}",
+                    "    {{\"id\": {}, \"parent\": {}, \"message\": {}, \"tree\": {}, \"created_at\": {}, \"agent\": {}, \"session_id\": {}}}",
                     json_string(&step.id),
                     json_string(&step.parent),
                     json_string(&step.message),
                     json_string(&step.tree),
-                    json_string(&step.created_at)
+                    json_string(&step.created_at),
+                    agent,
+                    session_id
                 )
             })
             .collect::<Vec<_>>()
@@ -1213,6 +1305,8 @@ impl State {
                     message: object_string(step, "message")?,
                     tree: object_string(step, "tree")?,
                     created_at: object_string(step, "created_at")?,
+                    agent: object_optional_string(step, "agent")?,
+                    session_id: object_optional_string(step, "session_id")?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -1774,6 +1868,461 @@ fn current_timestamp() -> String {
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
     format!("unix:{seconds}")
+}
+
+// ===== Cross-agent handoff: agent identity + session context =====
+//
+// When a code agent (claude, codex) creates a micro step, gstep records which
+// agent it was and that agent's session id. A *different* agent can later run
+// `gstep context` to locate the original session transcript, parse it (the two
+// agents use different on-disk formats), and read a digest of what was being
+// done so it can continue the work.
+
+struct AgentIdentity {
+    agent: String,
+    session_id: Option<String>,
+}
+
+/// Determine which code agent is creating a step, and its session id.
+/// Priority: explicit flags > Claude env var > active Codex session > none.
+/// Never guesses: returns `None` rather than risk attaching the wrong session,
+/// because a misattributed session would later feed a future agent the wrong
+/// conversation.
+fn resolve_commit_identity(ctx: &Context, args: &CommitArgs) -> Option<AgentIdentity> {
+    if let Some(agent) = &args.agent {
+        return Some(AgentIdentity {
+            agent: agent.clone(),
+            session_id: args.session_id.clone(),
+        });
+    }
+    // Claude Code exports its session id into the environment, which the gstep
+    // CLI/MCP subprocess it spawns inherits. This is authoritative.
+    if let Ok(sid) = env::var("CLAUDE_CODE_SESSION_ID") {
+        if !sid.trim().is_empty() {
+            return Some(AgentIdentity {
+                agent: "claude".to_string(),
+                session_id: Some(sid),
+            });
+        }
+    }
+    // Codex does not expose its session id to subprocesses, so fall back to
+    // detecting the Codex rollout that is actively being written for this
+    // working directory.
+    if let Some(sid) = detect_active_codex_session(ctx) {
+        return Some(AgentIdentity {
+            agent: "codex".to_string(),
+            session_id: Some(sid),
+        });
+    }
+    None
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("USERPROFILE")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+fn claude_projects_dir() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".claude").join("projects"))
+}
+
+fn codex_home() -> Option<PathBuf> {
+    if let Some(dir) = env::var_os("CODEX_HOME") {
+        let path = PathBuf::from(dir);
+        if !path.as_os_str().is_empty() {
+            return Some(path);
+        }
+    }
+    home_dir().map(|home| home.join(".codex"))
+}
+
+/// Recursively collect files under `root` whose file name satisfies `predicate`.
+fn find_files(root: &Path, predicate: &dyn Fn(&str) -> bool, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            find_files(&path, predicate, out);
+        } else if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            if predicate(name) {
+                out.push(path);
+            }
+        }
+    }
+}
+
+fn modified_secs_ago(path: &Path) -> Option<u64> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    SystemTime::now()
+        .duration_since(modified)
+        .ok()
+        .map(|duration| duration.as_secs())
+}
+
+/// Find the Codex rollout for the current working directory that was written
+/// most recently, but only if it was touched recently enough to plausibly be
+/// the session running right now. Returns its session id.
+///
+/// Known limitation: a plain-shell `gstep commit` (no agent running) made in a
+/// directory where Codex was active within the window will still be attributed
+/// to that Codex session. The attached session is real and for the same cwd, so
+/// the harm is low, but it can over-attribute. Reached only when no Claude
+/// session id is present in the environment.
+fn detect_active_codex_session(ctx: &Context) -> Option<String> {
+    const ACTIVE_WINDOW_SECS: u64 = 180;
+    let sessions = codex_home()?.join("sessions");
+    let mut files = Vec::new();
+    find_files(
+        &sessions,
+        &|name| name.starts_with("rollout-") && name.ends_with(".jsonl"),
+        &mut files,
+    );
+    let mut best: Option<(u64, String)> = None;
+    for file in files {
+        let Some(age) = modified_secs_ago(&file) else {
+            continue;
+        };
+        if age > ACTIVE_WINDOW_SECS {
+            continue;
+        }
+        let Some((id, cwd)) = codex_rollout_meta(&file) else {
+            continue;
+        };
+        if !same_path(&cwd, &ctx.root) {
+            continue;
+        }
+        if best
+            .as_ref()
+            .map(|(best_age, _)| age < *best_age)
+            .unwrap_or(true)
+        {
+            best = Some((age, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Compare a path string (possibly Windows-style) against a `Path` loosely:
+/// normalize separators, drop trailing slashes, and lowercase, so that minor
+/// representation differences do not cause a miss.
+fn same_path(a: &str, b: &Path) -> bool {
+    fn norm(value: &str) -> String {
+        value.replace('\\', "/").trim_end_matches('/').to_lowercase()
+    }
+    norm(a) == norm(&b.display().to_string())
+}
+
+/// Read the leading `session_meta` record of a Codex rollout, returning
+/// `(session_id, cwd)`.
+fn codex_rollout_meta(path: &Path) -> Option<(String, String)> {
+    let file = fs::File::open(path).ok()?;
+    let reader = io::BufReader::new(file);
+    for line in reader.lines().take(5).map_while(|line| line.ok()) {
+        let Ok(Json::Object(object)) = parse_json(&line) else {
+            continue;
+        };
+        if object_string(&object, "type").ok().as_deref() != Some("session_meta") {
+            continue;
+        }
+        let Some(Json::Object(payload)) = object.get("payload") else {
+            continue;
+        };
+        let id = object_string(payload, "id").ok()?;
+        let cwd = object_string(payload, "cwd").unwrap_or_default();
+        return Some((id, cwd));
+    }
+    None
+}
+
+/// Locate the transcript file on disk for a recorded `(agent, session_id)`.
+/// Resolved at read time (not stored) because session files get archived/moved.
+fn locate_transcript(agent: &str, session_id: &str) -> Option<PathBuf> {
+    match agent {
+        "claude" => {
+            // The per-project directory name is derived from a munged cwd and is
+            // unstable, so search every project dir for the unique session file.
+            let projects = claude_projects_dir()?;
+            let target = format!("{session_id}.jsonl");
+            let mut files = Vec::new();
+            find_files(&projects, &|name| name == target, &mut files);
+            files.into_iter().next()
+        }
+        "codex" => {
+            let home = codex_home()?;
+            let needle = format!("-{session_id}.jsonl");
+            let mut files = Vec::new();
+            for sub in ["sessions", "archived_sessions"] {
+                find_files(
+                    &home.join(sub),
+                    &|name| name.starts_with("rollout-") && name.ends_with(needle.as_str()),
+                    &mut files,
+                );
+            }
+            files.into_iter().next()
+        }
+        _ => None,
+    }
+}
+
+#[derive(Clone)]
+struct Turn {
+    role: String,
+    text: String,
+}
+
+/// Parse an agent transcript into an ordered list of user/assistant turns,
+/// normalizing the two on-disk formats into one shape.
+fn parse_transcript(agent: &str, path: &Path) -> Result<Vec<Turn>> {
+    let file = fs::File::open(path)
+        .map_err(|error| Error::new(format!("cannot open transcript {}: {error}", path.display())))?;
+    let reader = io::BufReader::new(file);
+    let mut turns = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(Json::Object(object)) = parse_json(&line) else {
+            continue;
+        };
+        match agent {
+            "claude" => parse_claude_line(&object, &mut turns),
+            "codex" => parse_codex_line(&object, &mut turns),
+            _ => {}
+        }
+    }
+    Ok(turns)
+}
+
+fn parse_claude_line(object: &BTreeMap<String, Json>, turns: &mut Vec<Turn>) {
+    let kind = match object.get("type") {
+        Some(Json::String(value)) => value.as_str(),
+        _ => return,
+    };
+    if kind != "user" && kind != "assistant" {
+        return;
+    }
+    let Some(Json::Object(message)) = object.get("message") else {
+        return;
+    };
+    let role = match message.get("role") {
+        Some(Json::String(value)) => value.clone(),
+        _ => kind.to_string(),
+    };
+    let text = match message.get("content") {
+        Some(Json::String(value)) => value.clone(),
+        Some(Json::Array(blocks)) => extract_text_blocks(blocks),
+        _ => String::new(),
+    };
+    let text = text.trim().to_string();
+    if !text.is_empty() {
+        turns.push(Turn { role, text });
+    }
+}
+
+/// Pull just the human-readable text out of a Claude content-block array,
+/// dropping thinking, tool calls, and tool results to keep the digest legible.
+fn extract_text_blocks(blocks: &[Json]) -> String {
+    let mut parts = Vec::new();
+    for block in blocks {
+        if let Json::Object(block) = block {
+            if let Some(Json::String(kind)) = block.get("type") {
+                if kind == "text" {
+                    if let Some(Json::String(text)) = block.get("text") {
+                        parts.push(text.clone());
+                    }
+                }
+            }
+        }
+    }
+    parts.join("\n")
+}
+
+fn parse_codex_line(object: &BTreeMap<String, Json>, turns: &mut Vec<Turn>) {
+    if object_string(object, "type").ok().as_deref() != Some("event_msg") {
+        return;
+    }
+    let Some(Json::Object(payload)) = object.get("payload") else {
+        return;
+    };
+    let role = match payload.get("type") {
+        Some(Json::String(kind)) if kind == "user_message" => "user",
+        Some(Json::String(kind)) if kind == "agent_message" => "assistant",
+        _ => return,
+    };
+    if let Some(Json::String(message)) = payload.get("message") {
+        let text = message.trim().to_string();
+        if !text.is_empty() {
+            turns.push(Turn {
+                role: role.to_string(),
+                text,
+            });
+        }
+    }
+}
+
+const DIGEST_MAX_TURNS: usize = 12;
+const DIGEST_MAX_TURN_CHARS: usize = 1200;
+const DIGEST_MAX_TOTAL_CHARS: usize = 8000;
+
+/// Build a bounded, handoff-oriented digest: keep the very first user turn (the
+/// original task — what "continue" most needs) plus the most recent turns,
+/// under a total size cap.
+fn build_digest(turns: &[Turn]) -> Vec<Turn> {
+    if turns.is_empty() {
+        return Vec::new();
+    }
+    let window_start = turns.len().saturating_sub(DIGEST_MAX_TURNS);
+    // The original task, only if it falls outside the recent window (otherwise
+    // it is already included below).
+    let head = turns
+        .iter()
+        .position(|turn| turn.role == "user")
+        .filter(|index| *index < window_start)
+        .map(|index| truncate_turn(&turns[index]));
+    let head_len = head.as_ref().map(|turn| turn.text.len()).unwrap_or(0);
+
+    let mut budget = DIGEST_MAX_TOTAL_CHARS.saturating_sub(head_len);
+    let mut recent = Vec::new();
+    for turn in turns[window_start..].iter().rev() {
+        let turn = truncate_turn(turn);
+        if turn.text.len() > budget && !recent.is_empty() {
+            break;
+        }
+        budget = budget.saturating_sub(turn.text.len());
+        recent.push(turn);
+    }
+    recent.reverse();
+
+    let mut digest = Vec::new();
+    if let Some(head) = head {
+        digest.push(head);
+    }
+    digest.extend(recent);
+    digest
+}
+
+fn truncate_turn(turn: &Turn) -> Turn {
+    let text = if turn.text.chars().count() > DIGEST_MAX_TURN_CHARS {
+        let truncated: String = turn.text.chars().take(DIGEST_MAX_TURN_CHARS).collect();
+        format!("{truncated}…[truncated]")
+    } else {
+        turn.text.clone()
+    };
+    Turn {
+        role: turn.role.clone(),
+        text,
+    }
+}
+
+fn cmd_context(args: &[String]) -> Result<()> {
+    let mut json = false;
+    let mut selector = None;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            other if selector.is_none() => selector = Some(other.to_string()),
+            other => {
+                return Err(Error::new(format!("unexpected context argument: {other}")));
+            }
+        }
+    }
+    let selector = selector.unwrap_or_else(|| "gstep:@".to_string());
+
+    let ctx = Context::discover()?;
+    let state = load_state(&ctx)?;
+    let resolved = resolve_selector(&ctx, &state, &selector)?;
+    let step = match &resolved.kind {
+        ResolvedKind::GstepStep { id } => state.find_step(id),
+        _ => None,
+    };
+    let step = step.ok_or_else(|| {
+        Error::new(format!(
+            "context is only available for gstep micro steps; {} is not a step",
+            resolved.selector
+        ))
+    })?;
+
+    let step_selector = format!("gstep:{}", step.id);
+    let agent = step.agent.clone();
+    let session_id = step.session_id.clone();
+
+    let (agent, session_id) = match (agent, session_id) {
+        (Some(agent), Some(session_id)) => (agent, session_id),
+        _ => {
+            if json {
+                println!(
+                    "{{\n  \"step\": {},\n  \"agent\": null,\n  \"session_id\": null,\n  \"transcript\": null,\n  \"turns\": []\n}}",
+                    json_string(&step_selector)
+                );
+            } else {
+                println!("{step_selector} has no recorded agent/session context.");
+            }
+            return Ok(());
+        }
+    };
+
+    let transcript = locate_transcript(&agent, &session_id);
+    let turns = match &transcript {
+        Some(path) => parse_transcript(&agent, path)?,
+        None => Vec::new(),
+    };
+    let digest = build_digest(&turns);
+
+    if json {
+        let turns_json = digest
+            .iter()
+            .map(|turn| {
+                format!(
+                    "{{\"role\": {}, \"text\": {}}}",
+                    json_string(&turn.role),
+                    json_string(&turn.text)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let transcript_json = transcript
+            .as_ref()
+            .map(|path| json_string(&path.display().to_string()))
+            .unwrap_or_else(|| "null".to_string());
+        println!(
+            "{{\n  \"step\": {},\n  \"agent\": {},\n  \"session_id\": {},\n  \"transcript\": {},\n  \"turns\": [{}]\n}}",
+            json_string(&step_selector),
+            json_string(&agent),
+            json_string(&session_id),
+            transcript_json,
+            turns_json
+        );
+        return Ok(());
+    }
+
+    println!("Context for {step_selector}");
+    println!("  agent:      {agent}");
+    println!("  session:    {session_id}");
+    match &transcript {
+        Some(path) => println!("  transcript: {}", path.display()),
+        None => println!("  transcript: not found locally (session may be on another machine)"),
+    }
+    println!("  message:    {}", step.message);
+    println!();
+    if digest.is_empty() {
+        println!("(no readable conversation turns recovered)");
+    } else {
+        println!("--- recovered context ({} turns) ---", digest.len());
+        for turn in &digest {
+            println!("[{}]", turn.role);
+            println!("{}", turn.text);
+            println!();
+        }
+    }
+    Ok(())
 }
 
 fn git_at(cwd: &Path, args: &[&str]) -> Result<String> {

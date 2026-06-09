@@ -168,6 +168,97 @@ fn mcp_server_lists_and_calls_project_tools() {
     assert!(output.contains("mcp-session"));
 }
 
+#[test]
+fn commit_records_agent_identity_and_context_reads_it_back() {
+    let repo = TestRepo::new("handoff");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "handoff"]);
+    repo.write("app.txt", "work\n");
+    // Explicit agent/session is the cross-agent contract; auto-detection is
+    // environment-dependent so the test pins it deterministically.
+    let commit = repo.gstep(&[
+        "commit",
+        "-m",
+        "checkpoint",
+        "--agent",
+        "codex",
+        "--session",
+        "sess-abc-123",
+    ]);
+    assert!(commit.contains("agent: codex session: sess-abc-123"));
+
+    // The identity is surfaced on show.
+    let show = repo.gstep(&["show", "gstep:@"]);
+    assert!(show.contains("agent codex"));
+    assert!(show.contains("session sess-abc-123"));
+
+    // A different agent reads the recorded identity back via context. The
+    // transcript for a synthetic session does not exist on disk, so the digest
+    // is empty, but the provenance (agent + session id) round-trips.
+    let context = repo.gstep(&["context", "gstep:@", "--json"]);
+    assert!(context.contains("\"agent\": \"codex\""));
+    assert!(context.contains("\"session_id\": \"sess-abc-123\""));
+    assert!(context.contains("\"transcript\": null"));
+
+    // Steps committed without identity report no recorded context rather than
+    // erroring (backward compatible with pre-feature states).
+    repo.write("app.txt", "more\n");
+    repo.gstep(&["commit", "-m", "anon"]);
+    let anon = repo.gstep(&["context", "gstep:@"]);
+    assert!(anon.contains("no recorded agent/session context"));
+}
+
+#[test]
+fn commit_auto_detects_active_codex_session() {
+    let repo = TestRepo::new("codex-detect");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+    repo.gstep(&["begin", "codex-detect"]);
+
+    // The working-directory string gstep will compute for this repo. On
+    // git-for-windows this comes back with forward slashes.
+    let root = repo.git(&["rev-parse", "--show-toplevel"]);
+    // Real Codex records cwd with native separators; on Windows that is
+    // backslashes, which must reconcile against git's forward-slash toplevel.
+    let codex_cwd = if cfg!(windows) {
+        root.replace('/', "\\")
+    } else {
+        root.clone()
+    };
+
+    // A synthetic CODEX_HOME containing one freshly written rollout for this
+    // cwd — enough to exercise the whole detection chain (walk, recency gate,
+    // session_meta parse, path match).
+    let codex_home = repo.path.join("fake-codex");
+    let sessions = codex_home
+        .join("sessions")
+        .join("2026")
+        .join("06")
+        .join("09");
+    fs::create_dir_all(&sessions).unwrap();
+    let id = "019eaa12-test-7080-9361-abcdefabcdef";
+    let meta = format!(
+        "{{\"timestamp\":\"2026-06-09T00:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"cwd\":\"{}\"}}}}\n",
+        codex_cwd.replace('\\', "\\\\")
+    );
+    fs::write(
+        sessions.join(format!("rollout-2026-06-09T00-00-00-{id}.jsonl")),
+        meta,
+    )
+    .unwrap();
+
+    repo.write("app.txt", "codex work\n");
+    let commit = repo.gstep_with_codex_home(&["commit", "-m", "codex auto"], &codex_home);
+    assert!(
+        commit.contains(&format!("agent: codex session: {id}")),
+        "expected codex auto-detection, got:\n{commit}"
+    );
+}
+
 struct TestRepo {
     path: PathBuf,
 }
@@ -218,9 +309,32 @@ impl TestRepo {
     }
 
     fn gstep(&self, args: &[&str]) -> String {
+        let output = self.gstep_command(args).output().unwrap();
+        assert_success("gstep", args, &output);
+        String::from_utf8_lossy(&output.stdout).to_string()
+    }
+
+    /// Build a gstep command with the host's code-agent environment scrubbed,
+    /// so auto-detection of the committing agent stays deterministic no matter
+    /// what agent (if any) is running the test suite.
+    fn gstep_command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(bin());
+        command
+            .current_dir(&self.path)
+            .args(args)
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("CODEX_HOME");
+        command
+    }
+
+    /// Run gstep with the Claude env scrubbed and `CODEX_HOME` pointed at a
+    /// synthetic Codex home, to exercise Codex session auto-detection.
+    fn gstep_with_codex_home(&self, args: &[&str], codex_home: &PathBuf) -> String {
         let output = Command::new(bin())
             .current_dir(&self.path)
             .args(args)
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env("CODEX_HOME", codex_home)
             .output()
             .unwrap();
         assert_success("gstep", args, &output);
@@ -228,11 +342,7 @@ impl TestRepo {
     }
 
     fn gstep_fail(&self, args: &[&str]) -> String {
-        let output = Command::new(bin())
-            .current_dir(&self.path)
-            .args(args)
-            .output()
-            .unwrap();
+        let output = self.gstep_command(args).output().unwrap();
         assert!(
             !output.status.success(),
             "expected gstep {:?} to fail, stdout:\n{}\nstderr:\n{}",
@@ -251,6 +361,8 @@ impl TestRepo {
         let mut child = Command::new(bin())
             .current_dir(&self.path)
             .arg("mcp")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("CODEX_HOME")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

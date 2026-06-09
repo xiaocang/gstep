@@ -34,6 +34,7 @@ Default to the **MCP** when available. Fall back to the **CLI** when:
 | start / begin a session | `mcp__gstep__gstep_begin` (`name` required; default `anchor: "git:HEAD"`) |
 | commit / checkpoint / save | `mcp__gstep__gstep_commit` (terse `message`) |
 | status / where am I | `mcp__gstep__gstep_status` |
+| read another agent's session / continue their work | `mcp__gstep__gstep_context` (`selector` default `gstep:@`) |
 | timeline / history | `mcp__gstep__gstep_timeline` |
 | diff | `mcp__gstep__gstep_diff` |
 | show <selector> | `mcp__gstep__gstep_show` |
@@ -57,6 +58,17 @@ Build first if needed: `cargo build --release`. Then `./target/release/gstep`.
 | materialize | `gstep ...` (check `gstep --help` for current subcommand) |
 
 If a subcommand isn't documented in README.md, run `./target/release/gstep --help` to discover it — don't guess flags.
+
+## Cross-agent handoff
+
+Each commit records the committing code agent (claude / codex) and its session id —
+Claude is detected from `CLAUDE_CODE_SESSION_ID`, Codex from its active session.
+When you need to continue work another agent checkpointed, call
+`gstep_context` (or `gstep context <selector>`) first: it locates that agent's
+session transcript, parses it (Claude and Codex use different on-disk formats),
+and returns the original task plus recent turns so you can pick up where they
+left off. This is the point of the feature — a different agent reading the
+prior agent's context, not resuming the same agent.
 
 ## Selectors
 

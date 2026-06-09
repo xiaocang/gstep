@@ -62,6 +62,27 @@ gstep status
 gstep status --json
 ```
 
+Each commit records which code agent created it (claude / codex) and that
+agent's session id — Claude is detected from its environment, Codex from its
+active session for the working directory. Override with `--agent` / `--session`:
+
+```sh
+gstep commit -m "extract tokenizer" --agent codex --session <id>
+```
+
+A *different* code agent can then recover the originating session's context and
+continue the work. `gstep context` locates the recorded session's transcript,
+parses it (Claude and Codex use different on-disk formats), and prints the
+original task plus recent conversation turns:
+
+```sh
+gstep context              # latest step (gstep:@)
+gstep context gstep:step-2
+gstep context --json
+```
+
+Currently `claude` and `codex` are supported.
+
 Compare formal Git history with the current micro step:
 
 ```sh

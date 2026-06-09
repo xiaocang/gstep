@@ -28,6 +28,7 @@ If the Codex session has a configured `gstep` MCP server, prefer the MCP tools f
 - `gstep_show`
 - `gstep_diff`
 - `gstep_commit`
+- `gstep_context`
 - `gstep_branch`
 - `gstep_checkout`
 - `gstep_materialize`
@@ -58,6 +59,24 @@ gstep commit -m "short checkpoint message"
 ```
 
 Use specific, action-oriented micro-step messages. Do not stage files or create Git commits as part of this workflow.
+
+### Cross-Agent Handoff
+
+Every `gstep commit` records which code agent created the step and that agent's
+session id. Codex is detected automatically from the active session; you do not
+need to supply anything. To pick up work another agent (e.g. Claude) checkpointed,
+read its session context first:
+
+```sh
+gstep context              # the latest step (gstep:@)
+gstep context gstep:step-2
+gstep context --json
+```
+
+This prints the originating agent, its session id, the transcript path, and a
+digest of the conversation (the original task plus recent turns) so you can
+understand what was being done and continue it. Use this before resuming or
+building on a step you did not create yourself.
 
 ### Inspect Timeline and Content
 
