@@ -35,6 +35,7 @@ If the Codex session has a configured `gstep` MCP server, prefer the MCP tools f
 - `gstep_branch`
 - `gstep_checkout`
 - `gstep_materialize`
+- `gstep_promote`
 - `gstep_bind`
 
 If MCP tools are unavailable, use the local CLI. In repos with RTK guidance, prefix shell commands with `rtk`, for example `rtk gstep status --json`.
@@ -146,6 +147,21 @@ gstep bind git:HEAD --from gstep:<step> --git-notes
 ```
 
 Only use `--git-notes` if the user wants the binding written into Git notes.
+
+### Promote a Micro Step to a Git Commit
+
+Use this when the user wants to turn a checkpoint into a permanent Git commit in
+one step. It lays the step's tree into the worktree, makes the Git commit, and
+binds the new commit back to the step:
+
+```sh
+gstep promote gstep:<step> -m "<message>"
+gstep promote gstep:<step> -m "<message>" --git-notes
+gstep promote gstep:<step> -m "<message>" --no-bind
+```
+
+This advances Git HEAD on the current branch, so confirm the worktree state
+first. Use `--no-bind` to skip recording the binding.
 
 ## MCP Configuration
 

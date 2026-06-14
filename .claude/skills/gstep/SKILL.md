@@ -40,7 +40,8 @@ Default to the **MCP** when available. Fall back to the **CLI** when:
 | show <selector> | `mcp__gstep__gstep_show` |
 | branch / variant | `mcp__gstep__gstep_branch` |
 | checkout / rollback | `mcp__gstep__gstep_checkout` (`as_worktree: true` to avoid moving HEAD) |
-| graduate to Git commit | `mcp__gstep__gstep_bind` (offer `git_notes: true`) |
+| graduate a step to a real Git commit | `mcp__gstep__gstep_promote` (one shot: commits the step + binds it; offer `git_notes: true`, `no_bind: true`) |
+| bind an already-made Git commit to its step | `mcp__gstep__gstep_bind` (offer `git_notes: true`) |
 | materialize a step elsewhere | `mcp__gstep__gstep_materialize` |
 
 ### CLI equivalents
@@ -55,6 +56,7 @@ Build first if needed: `cargo build --release`. Then `./target/release/gstep`.
 | timeline | `gstep timeline` (add `--graph` or `--json`) |
 | diff | `gstep diff <from> <to>` (e.g. `git:HEAD gstep:@`) |
 | show | `gstep show <selector>` |
+| promote to a Git commit | `gstep promote gstep:<step> -m "<msg>"` (add `--git-notes` or `--no-bind`) |
 | materialize | `gstep ...` (check `gstep --help` for current subcommand) |
 
 If a subcommand isn't documented in README.md, run `./target/release/gstep --help` to discover it — don't guess flags.

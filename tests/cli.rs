@@ -52,6 +52,47 @@ fn commit_timeline_status_and_bind_keep_git_history_clean() {
 }
 
 #[test]
+fn promote_turns_a_micro_step_into_a_real_git_commit() {
+    let repo = TestRepo::new("promote");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base commit"]);
+    let head_before = repo.git(&["rev-parse", "HEAD"]);
+
+    repo.gstep(&["begin", "ship-it"]);
+    repo.write("app.txt", "micro\n");
+    repo.gstep(&["commit", "-m", "micro one"]);
+
+    // Promote lays the step tree into the worktree, makes a Git commit, and
+    // binds the new commit back to the step it came from.
+    let out = repo.gstep(&["promote", "gstep:@", "-m", "ship micro one", "--git-notes"]);
+    assert!(out.contains("Promoted gstep:step-1 to git:"));
+    assert!(out.contains("Bound git:"));
+
+    // Git HEAD advanced by exactly one commit carrying the step's content.
+    let head_after = repo.git(&["rev-parse", "HEAD"]);
+    assert_ne!(head_before, head_after);
+    assert_eq!(repo.git(&["log", "--oneline"]).lines().count(), 2);
+    assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "ship micro one");
+    assert_eq!(repo.read("app.txt"), "micro\n");
+    // The worktree is clean: the commit captured everything.
+    assert_eq!(repo.git(&["status", "--porcelain"]).trim(), "");
+
+    // Provenance round-trips through both the binding store and git notes.
+    let status = repo.gstep(&["status", "--json"]);
+    assert!(status.contains("\"bound_to_git_commit\": \"gstep:step-1\""));
+    let note = repo.git(&["notes", "--ref", "refs/notes/gstep", "show", "HEAD"]);
+    assert!(note.contains("gstep.from=gstep:step-1"));
+
+    // --no-bind skips the binding side effect.
+    repo.write("app.txt", "again\n");
+    repo.gstep(&["commit", "-m", "micro two"]);
+    let out = repo.gstep(&["promote", "gstep:@", "-m", "ship micro two", "--no-bind"]);
+    assert!(out.contains("Promoted gstep:step-2 to git:"));
+    assert!(!out.contains("Bound git:"));
+}
+
+#[test]
 fn selectors_diff_materialize_and_checkout_do_not_move_git_head() {
     let repo = TestRepo::new("selectors");
     repo.write("app.txt", "base\n");

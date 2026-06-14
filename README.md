@@ -121,6 +121,15 @@ Optionally also write the binding as Git notes:
 gstep bind git:HEAD --from gstep:step-1 --git-notes
 ```
 
+Or do the whole thing — lay the step into the worktree, make the Git commit, and
+bind it back — in one shot with `promote`:
+
+```sh
+gstep promote gstep:step-1 -m "refactor parser"
+# add --git-notes to also record provenance in Git notes,
+# or --no-bind to skip recording the binding.
+```
+
 ## Multi-Agent Collaboration
 
 Start a session anchored at the current Git commit. This also initializes the shared agent timeline:
@@ -161,6 +170,7 @@ gstep checkout gstep:<step-or-branch>
 gstep checkout --as-worktree <selector>
 gstep revert gstep:<step>
 gstep materialize <selector> <path>
+gstep promote gstep:<step> -m <message> [--git-notes] [--no-bind]
 gstep bind git:<rev> --from gstep:<step> [--git-notes]
 gstep mcp
 gstep close --prune
@@ -228,6 +238,7 @@ gstep_commit
 gstep_branch
 gstep_checkout
 gstep_materialize
+gstep_promote
 gstep_bind
 ```
 

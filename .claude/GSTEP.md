@@ -21,7 +21,7 @@ Use the **gstep MCP** (`mcp__gstep__*`) tools to capture small, incremental step
    - `mcp__gstep__gstep_show <selector>`
 4. **Branch / explore variants** with `mcp__gstep__gstep_branch` when trying alternatives.
 5. **Recover state** with `mcp__gstep__gstep_checkout <selector>` (use `as_worktree: true` to materialize without moving HEAD).
-6. **Bind to Git** when a micro step graduates to a real commit: `mcp__gstep__gstep_bind` (optionally `git_notes: true`).
+6. **Graduate to Git** when a micro step is ready to become a real commit: `mcp__gstep__gstep_promote` makes the Git commit and binds it in one shot (optionally `git_notes: true`, or `no_bind: true`). Use `mcp__gstep__gstep_bind` only to attach an already-made commit to its step.
 
 ## Rules
 

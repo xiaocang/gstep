@@ -56,6 +56,7 @@ fn run() -> Result<()> {
         "checkout" => cmd_checkout(&args[1..]),
         "revert" => cmd_revert(&args[1..]),
         "materialize" => cmd_materialize(&args[1..]),
+        "promote" => cmd_promote(&args[1..]),
         "bind" => cmd_bind(&args[1..]),
         "mcp" => cmd_mcp(&args[1..]),
         "close" => cmd_close(&args[1..]),
@@ -86,6 +87,7 @@ Usage:\n\
   gstep checkout --as-worktree <selector>\n\
   gstep revert gstep:<step>\n\
   gstep materialize <selector> <path>\n\
+  gstep promote gstep:<step> -m <message> [--git-notes] [--no-bind]\n\
   gstep bind git:<rev> --from gstep:<step> [--git-notes]\n\
   gstep mcp\n\
   gstep close --prune\n\
@@ -358,6 +360,8 @@ fn commit_agent_changes(
                 message,
                 tree: tree.clone(),
                 created_at: current_timestamp(),
+                agent: Some(name.to_string()),
+                session_id: None,
             });
             state.current = Some(format!("gstep:{id}"));
             if let Some(collab) = state.collab.as_mut() {
@@ -884,6 +888,98 @@ fn cmd_bind(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Turn a gstep micro step into a real Git commit in one shot: lay the step's
+/// tree into the worktree, make a Git commit on the current branch, then bind
+/// the new commit back to the step it came from. This is the
+/// `checkout -> git commit -> bind` workflow collapsed into a single command.
+fn cmd_promote(args: &[String]) -> Result<()> {
+    let mut selector = None;
+    let mut message = None;
+    let mut git_notes = false;
+    let mut no_bind = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-m" | "--message" => {
+                index += 1;
+                message = Some(
+                    args.get(index)
+                        .ok_or_else(|| Error::new("promote message flag requires a value"))?
+                        .clone(),
+                );
+            }
+            "--git-notes" => git_notes = true,
+            "--no-bind" => no_bind = true,
+            other if selector.is_none() && !other.starts_with('-') => {
+                selector = Some(other.to_string());
+            }
+            other => return Err(Error::new(format!("unknown promote option: {other}"))),
+        }
+        index += 1;
+    }
+
+    let selector = selector
+        .ok_or_else(|| Error::new("promote requires a gstep:<step> selector"))?;
+    if !selector.starts_with("gstep:") {
+        return Err(Error::new("promote only accepts gstep:<step> selectors"));
+    }
+    let message = message.ok_or_else(|| Error::new("promote requires -m <message>"))?;
+
+    let ctx = Context::discover()?;
+    let state = load_state(&ctx)?;
+    let resolved = resolve_selector(&ctx, &state, &selector)?;
+    let canonical_from = canonical_selector(&ctx, &state, &selector)?;
+
+    // Lay the step's tree into the worktree, then make a real Git commit so HEAD
+    // advances on the current branch with exactly that content. Git hooks may
+    // adjust files, so the final commit tree is whatever Git records.
+    checkout_tree_to_worktree(&ctx, &resolved.tree)?;
+    git(&ctx, &["add", "-A"])?;
+    git(&ctx, &["commit", "-m", message.as_str()])?;
+    let commit = resolve_git_commit(&ctx, "HEAD")?;
+    let short = short_oid(&ctx, &commit)?;
+    println!("Promoted {} to git:{short}", resolved.selector);
+
+    // Record provenance so the new commit knows which step it came from. Only
+    // bind when the source resolves to an actual gstep step (a branch may point
+    // straight at a git base, which is already a commit and has nothing to bind).
+    if !no_bind && canonical_from.starts_with("gstep:") {
+        let mut bindings = load_bindings(&ctx).unwrap_or_default();
+        let key = format!("git:{commit}");
+        bindings.insert(
+            key,
+            Binding {
+                from: canonical_from.clone(),
+                session: state.session.clone(),
+                bound_at: current_timestamp(),
+            },
+        );
+        save_bindings(&ctx, &bindings)?;
+
+        if git_notes {
+            let note = format!(
+                "gstep.from={canonical_from}\ngstep.session={}",
+                state.session
+            );
+            git(
+                &ctx,
+                &[
+                    "notes",
+                    "--ref",
+                    "refs/notes/gstep",
+                    "add",
+                    "-f",
+                    "-m",
+                    note.as_str(),
+                    commit.as_str(),
+                ],
+            )?;
+        }
+        println!("Bound git:{short} from {canonical_from}");
+    }
+    Ok(())
+}
+
 fn cmd_close(args: &[String]) -> Result<()> {
     let mut prune = false;
     for arg in args {
@@ -1094,6 +1190,19 @@ fn mcp_tools() -> Vec<String> {
             false,
         ),
         mcp_tool(
+            "gstep_promote",
+            "Turn a gstep micro step into a real Git commit on the current branch in one shot: lays the step's tree into the worktree, commits it with Git, and binds the new commit back to the step. Use when a checkpoint is ready to become a permanent commit.",
+            &[
+                ("selector", "string", "Step selector to promote, for example gstep:@ or gstep:step-3."),
+                ("message", "string", "Git commit message."),
+                ("git_notes", "boolean", "Also write provenance to refs/notes/gstep."),
+                ("no_bind", "boolean", "Skip recording the gstep->commit binding."),
+            ],
+            &["selector", "message"],
+            false,
+            false,
+        ),
+        mcp_tool(
             "gstep_bind",
             "Bind a Git commit to the gstep micro step it came from.",
             &[
@@ -1271,6 +1380,18 @@ fn mcp_tool_args(name: &str, arguments: &BTreeMap<String, Json>) -> Result<McpIn
             invocation.args.push("materialize".to_string());
             invocation.args.push(required_arg(arguments, "selector")?);
             invocation.args.push(required_arg(arguments, "path")?);
+        }
+        "gstep_promote" => {
+            invocation.args.push("promote".to_string());
+            invocation.args.push(required_arg(arguments, "selector")?);
+            invocation.args.push("-m".to_string());
+            invocation.args.push(required_arg(arguments, "message")?);
+            if optional_bool_arg(arguments, "git_notes")?.unwrap_or(false) {
+                invocation.args.push("--git-notes".to_string());
+            }
+            if optional_bool_arg(arguments, "no_bind")?.unwrap_or(false) {
+                invocation.args.push("--no-bind".to_string());
+            }
         }
         "gstep_bind" => {
             invocation.args.push("bind".to_string());
