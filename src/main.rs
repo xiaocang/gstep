@@ -42,28 +42,44 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    match args[0].as_str() {
-        "begin" => cmd_begin(&args[1..]),
-        "fork" => cmd_fork(&args[1..]),
-        "status" => cmd_status(&args[1..]),
-        "timeline" => cmd_timeline(&args[1..]),
-        "log" => cmd_log(&args[1..]),
-        "show" => cmd_show(&args[1..]),
-        "context" => cmd_context(&args[1..]),
-        "diff" => cmd_diff(&args[1..]),
-        "commit" => cmd_commit(&args[1..]),
-        "branch" => cmd_branch(&args[1..]),
-        "checkout" => cmd_checkout(&args[1..]),
-        "revert" => cmd_revert(&args[1..]),
-        "materialize" => cmd_materialize(&args[1..]),
-        "promote" => cmd_promote(&args[1..]),
-        "bind" => cmd_bind(&args[1..]),
-        "mcp" => cmd_mcp(&args[1..]),
-        "close" => cmd_close(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_usage();
-            Ok(())
-        }
+    let command = args[0].as_str();
+    let rest = &args[1..];
+
+    // Top-level help: `gstep`, `gstep help`, `gstep --help`, `gstep -h`.
+    // `gstep help <command>` shows that command's detailed help.
+    if matches!(command, "help" | "--help" | "-h") {
+        return match rest.first() {
+            Some(sub) => print_command_help(sub),
+            None => {
+                print_usage();
+                Ok(())
+            }
+        };
+    }
+
+    // Per-subcommand help: `gstep <command> --help` / `gstep <command> -h`.
+    if rest.iter().any(|arg| arg == "--help" || arg == "-h") {
+        return print_command_help(command);
+    }
+
+    match command {
+        "begin" => cmd_begin(rest),
+        "fork" => cmd_fork(rest),
+        "status" => cmd_status(rest),
+        "timeline" => cmd_timeline(rest),
+        "log" => cmd_log(rest),
+        "show" => cmd_show(rest),
+        "context" => cmd_context(rest),
+        "diff" => cmd_diff(rest),
+        "commit" => cmd_commit(rest),
+        "branch" => cmd_branch(rest),
+        "checkout" => cmd_checkout(rest),
+        "revert" => cmd_revert(rest),
+        "materialize" => cmd_materialize(rest),
+        "promote" => cmd_promote(rest),
+        "bind" => cmd_bind(rest),
+        "mcp" => cmd_mcp(rest),
+        "close" => cmd_close(rest),
         command => Err(Error::new(format!("unknown command: {command}"))),
     }
 }
@@ -92,8 +108,271 @@ Usage:\n\
   gstep mcp\n\
   gstep close --prune\n\
 \n\
+Run `gstep <command> --help` for details on a command.\n\
+\n\
 Selectors: git:<rev>, gstep:@, gstep:base, gstep:<step-or-branch>, worktree"
     );
+}
+
+const SELECTORS_HELP: &str =
+    "Selectors: git:<rev>, gstep:@, gstep:base, gstep:<step-or-branch>, worktree";
+
+/// Print detailed help for a single subcommand. Reached via
+/// `gstep <command> --help`, `gstep <command> -h`, or `gstep help <command>`.
+///
+/// Each arm returns the help body plus whether to append the selectors
+/// footer (only commands taking a generic `<selector>` show it).
+fn print_command_help(command: &str) -> Result<()> {
+    let (body, show_selectors) = match command {
+        "begin" => (
+            "gstep begin — Start a gstep session anchored to a Git commit\n\
+\n\
+Usage:\n\
+  gstep begin <name> [--anchor git:<rev>]\n\
+\n\
+Arguments:\n\
+  <name>              Descriptive session name.\n\
+\n\
+Options:\n\
+  --anchor git:<rev>  Git commit to anchor the session to (default: git:HEAD).\n\
+  -h, --help          Show this help.",
+            false,
+        ),
+        "fork" => (
+            "gstep fork — Create an isolated writable agent layer over the shared head\n\
+\n\
+Usage:\n\
+  gstep fork <name> [--from <selector>]\n\
+\n\
+Arguments:\n\
+  <name>             Agent layer name (ASCII letters, numbers, '-', '_').\n\
+\n\
+Options:\n\
+  --from <selector>  Source selector for the layer's base tree\n\
+                     (default: the collaboration shared head).\n\
+  -h, --help         Show this help.",
+            true,
+        ),
+        "status" => (
+            "gstep status — Show Git macro and gstep micro step status\n\
+\n\
+Usage:\n\
+  gstep status [--all] [--json]\n\
+\n\
+Options:\n\
+  --all       Show all agent layers.\n\
+  --json      Emit JSON output.\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "timeline" => (
+            "gstep timeline — Show the combined Git + gstep history\n\
+\n\
+Usage:\n\
+  gstep timeline [--graph] [--json]\n\
+\n\
+Options:\n\
+  --graph     Draw an ASCII graph of the timeline.\n\
+  --json      Emit JSON output.\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "log" => (
+            "gstep log — List gstep micro steps\n\
+\n\
+Usage:\n\
+  gstep log [--steps-only] [--include-git]\n\
+\n\
+Options:\n\
+  --steps-only   Show only gstep micro steps (default).\n\
+  --include-git  Interleave Git commits with the micro steps.\n\
+  -h, --help     Show this help.",
+            false,
+        ),
+        "show" => (
+            "gstep show — Show a selector's metadata and files\n\
+\n\
+Usage:\n\
+  gstep show <selector>\n\
+\n\
+Arguments:\n\
+  <selector>  Selector to show.\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            true,
+        ),
+        "context" => (
+            "gstep context — Recover the originating agent's session for a step\n\
+\n\
+Recover which code agent created a step and a digest of its session, so a\n\
+different agent can read what was being done and continue it.\n\
+\n\
+Usage:\n\
+  gstep context [<selector>] [--json]\n\
+\n\
+Arguments:\n\
+  <selector>  Step selector (default: gstep:@).\n\
+\n\
+Options:\n\
+  --json      Emit JSON output.\n\
+  -h, --help  Show this help.",
+            true,
+        ),
+        "diff" => (
+            "gstep diff — Diff two selectors\n\
+\n\
+Usage:\n\
+  gstep diff <selector-a> <selector-b> [--json]\n\
+\n\
+Arguments:\n\
+  <selector-a> <selector-b>  Selectors to compare.\n\
+\n\
+Options:\n\
+  --json      Emit JSON name-status output.\n\
+  -h, --help  Show this help.",
+            true,
+        ),
+        "commit" => (
+            "gstep commit — Create a gstep micro step from the worktree\n\
+\n\
+Creates a micro step from the current worktree, or commits the active agent\n\
+layer when one is in context. The committing agent and session id are recorded\n\
+automatically; pass --agent/--session to override.\n\
+\n\
+Usage:\n\
+  gstep commit -m <message> [--agent <name>] [--session <id>]\n\
+\n\
+Options:\n\
+  -m, --message <message>  Micro step message (required).\n\
+  --agent <name>           Override the recorded committing agent.\n\
+  --session <id>           Override the recorded session id.\n\
+  -h, --help               Show this help.",
+            false,
+        ),
+        "branch" => (
+            "gstep branch — Create a gstep branch / variant\n\
+\n\
+Usage:\n\
+  gstep branch <name> [--from <selector>]\n\
+\n\
+Arguments:\n\
+  <name>             Branch name (ASCII letters, numbers, '-', '_').\n\
+\n\
+Options:\n\
+  --from <selector>  Source selector (default: the current step).\n\
+  -h, --help         Show this help.",
+            true,
+        ),
+        "checkout" => (
+            "gstep checkout — Write a selector into the worktree without moving Git HEAD\n\
+\n\
+Usage:\n\
+  gstep checkout gstep:<step-or-branch>\n\
+  gstep checkout --as-worktree <selector>\n\
+\n\
+Arguments:\n\
+  <selector>     Selector to check out.\n\
+\n\
+Options:\n\
+  --as-worktree  Allow any selector (including git:<rev>) to be written to the\n\
+                 worktree without moving Git HEAD.\n\
+  -h, --help     Show this help.",
+            true,
+        ),
+        "revert" => (
+            "gstep revert — Reset the worktree to a step's parent\n\
+\n\
+Usage:\n\
+  gstep revert gstep:<step>\n\
+\n\
+Arguments:\n\
+  gstep:<step>  Step whose parent the worktree is reset to.\n\
+\n\
+Options:\n\
+  -h, --help    Show this help.",
+            false,
+        ),
+        "materialize" => (
+            "gstep materialize — Export a selector's tree to a path\n\
+\n\
+Usage:\n\
+  gstep materialize <selector> <path>\n\
+\n\
+Arguments:\n\
+  <selector>  Selector to export.\n\
+  <path>      Destination directory.\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            true,
+        ),
+        "promote" => (
+            "gstep promote — Turn a gstep micro step into a real Git commit\n\
+\n\
+Lays the step's tree into the worktree, commits it with Git on the current\n\
+branch, and binds the new commit back to the step it came from.\n\
+\n\
+Usage:\n\
+  gstep promote gstep:<step> -m <message> [--git-notes] [--no-bind]\n\
+\n\
+Arguments:\n\
+  gstep:<step>  Step to promote.\n\
+\n\
+Options:\n\
+  -m, --message <message>  Git commit message (required).\n\
+  --git-notes              Also write provenance to refs/notes/gstep.\n\
+  --no-bind                Skip recording the gstep->commit binding.\n\
+  -h, --help               Show this help.",
+            false,
+        ),
+        "bind" => (
+            "gstep bind — Bind a Git commit to the gstep step it came from\n\
+\n\
+Usage:\n\
+  gstep bind git:<rev> --from gstep:<step> [--git-notes]\n\
+\n\
+Arguments:\n\
+  git:<rev>            Git commit to bind.\n\
+\n\
+Options:\n\
+  --from gstep:<step>  Source step the commit came from (required).\n\
+  --git-notes          Also write metadata to refs/notes/gstep.\n\
+  -h, --help           Show this help.",
+            false,
+        ),
+        "mcp" => (
+            "gstep mcp — Run the MCP server over stdio\n\
+\n\
+Serves the gstep tools as a Model Context Protocol server, reading JSON-RPC\n\
+messages from stdin and writing responses to stdout.\n\
+\n\
+Usage:\n\
+  gstep mcp\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "close" => (
+            "gstep close — Close the session and prune local gstep metadata\n\
+\n\
+Usage:\n\
+  gstep close --prune\n\
+\n\
+Options:\n\
+  --prune     Remove the local gstep metadata directory (required).\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        other => return Err(Error::new(format!("unknown command: {other}"))),
+    };
+    if show_selectors {
+        println!("{body}\n\n{SELECTORS_HELP}");
+    } else {
+        println!("{body}");
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug)]

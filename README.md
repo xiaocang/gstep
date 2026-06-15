@@ -176,6 +176,9 @@ gstep mcp
 gstep close --prune
 ```
 
+Run `gstep --help` for the command list, or `gstep <command> --help`
+(equivalently `gstep help <command>`) for detailed help on a single command.
+
 ## Selectors
 
 ```text
