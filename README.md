@@ -145,6 +145,15 @@ gstep fork agent-a
 gstep fork agent-b
 ```
 
+Give the agent a working copy of its layer, then edit it. `agent-materialize`
+lays the layer (shared head + the agent's own uncommitted overlay) into the
+agent's view directory:
+
+```sh
+gstep agent-materialize agent-a
+# edit files under .git/gstep/views/<session>/agent-a/ ...
+```
+
 Inside an agent process context, native commands operate on the agent layer. The current prototype recognizes the agent from `GSTEP_AGENT` or from the current directory being under the agent view path:
 
 ```sh
@@ -152,7 +161,39 @@ GSTEP_AGENT=agent-a gstep status
 GSTEP_AGENT=agent-a gstep commit -m "agent-a change"
 ```
 
-`gstep commit` merges the agent layer into the collaboration shared head. Non-overlapping changes are merged automatically. Conflicting edits are recorded in `.git/gstep/state.json`, the shared head is left unchanged, and the agent can keep editing before retrying the same native `gstep commit`.
+`gstep commit` first folds the agent's view edits — including file deletions —
+back into its layer (or run `gstep agent-sync agent-a` explicitly to inspect the
+captured change set), then merges the layer into the collaboration shared head.
+Non-overlapping changes are merged automatically.
+
+When two agents change the same path, the commit is recorded as a conflict, the
+shared head is left unchanged, and the conflict becomes an explicit item to work
+through:
+
+```sh
+gstep conflicts                      # list open conflicts
+gstep conflict-show conflict-1       # inspect; --checkout writes markers into the view
+gstep resolve conflict-1 --theirs    # abandon the agent's change; reset to shared head
+gstep resolve conflict-1 --ours      # land the agent's tree
+gstep resolve conflict-1             # land a hand-resolved view (after editing markers)
+```
+
+To avoid conflicts up front, agents can lease paths and advertise intent. A
+commit warns when it touches another agent's claim or in-flight edits (set
+`GSTEP_ENFORCE_CLAIMS=1` to make claim collisions a hard error):
+
+```sh
+gstep claim agent-a 'src/**' --ttl 3600   # lease src/** for an hour
+gstep claims                              # list active leases
+gstep note agent-a "refactoring the parser, hands off app.txt"
+gstep context --agent agent-b             # read a peer's live, uncommitted layer
+```
+
+An idle layer falls behind as peers land work; `gstep rebase <name>` replays its
+uncommitted changes onto the current shared head without committing. `gstep
+status --all` shows each layer's dirty/behind/last-active state and its inline
+diff; `gstep activity` is a time-ordered feed of steps and conflicts. Reclaim
+layers with `gstep agent-drop <name>` and `gstep gc`.
 
 ## Commands
 
@@ -174,6 +215,21 @@ gstep promote gstep:<step> -m <message> [--git-notes] [--no-bind]
 gstep bind git:<rev> --from gstep:<step> [--git-notes]
 gstep mcp
 gstep close --prune
+
+# Multi-agent collaboration
+gstep agent-materialize <name>
+gstep agent-sync <name>
+gstep agent-drop <name>
+gstep rebase <name>
+gstep conflicts [--json]
+gstep conflict-show <id> [--checkout]
+gstep resolve <id> [--ours|--theirs|--from <selector>] [-m <message>] [--force]
+gstep claim <agent> <glob> [--ttl <secs>] [--release]
+gstep claims [--json]
+gstep note <agent> [<text...>] [--clear]
+gstep context [--agent <name>] [<selector>]
+gstep activity [--json] [--limit <n>]
+gstep gc
 ```
 
 Run `gstep --help` for the command list, or `gstep <command> --help`
@@ -238,11 +294,24 @@ gstep_timeline
 gstep_show
 gstep_diff
 gstep_commit
+gstep_context
 gstep_branch
 gstep_checkout
 gstep_materialize
 gstep_promote
 gstep_bind
+gstep_agent_materialize
+gstep_agent_sync
+gstep_agent_drop
+gstep_rebase
+gstep_conflicts
+gstep_conflict_show
+gstep_resolve
+gstep_claim
+gstep_claims
+gstep_note
+gstep_activity
+gstep_gc
 ```
 
 Example MCP server configuration:
@@ -270,11 +339,17 @@ The main files are:
 
 ```text
 .git/gstep/state.json
+.git/gstep/state.lock                       (held briefly during commits)
 .git/gstep/bindings.json
 .git/gstep/agents/<name>/upper/
 .git/gstep/agents/<name>/tombstones
+.git/gstep/views/<session>/<name>/          (an agent's editable working copy)
 .git/gstep/shadow.git/objects/info/alternates
 ```
+
+`state.json` carries the shared head, each agent layer, open conflicts, and path
+claims; it is written atomically (temp file + rename) under a short-lived
+`state.lock` so concurrent agent commits cannot clobber each other.
 
 The shadow `alternates` file points at the repository's main Git object store so `gstep` can read Git commit trees while keeping its own metadata separate.
 

@@ -80,6 +80,19 @@ fn run() -> Result<()> {
         "bind" => cmd_bind(rest),
         "mcp" => cmd_mcp(rest),
         "close" => cmd_close(rest),
+        // Multi-agent collaboration commands.
+        "agent-materialize" => cmd_agent_materialize(rest),
+        "agent-sync" => cmd_agent_sync(rest),
+        "agent-drop" => cmd_agent_drop(rest),
+        "rebase" => cmd_agent_rebase(rest),
+        "conflicts" => cmd_conflicts(rest),
+        "conflict-show" => cmd_conflict_show(rest),
+        "resolve" => cmd_resolve(rest),
+        "claim" => cmd_claim(rest),
+        "claims" => cmd_claims(rest),
+        "note" => cmd_note(rest),
+        "activity" => cmd_activity(rest),
+        "gc" => cmd_gc(rest),
         command => Err(Error::new(format!("unknown command: {command}"))),
     }
 }
@@ -107,6 +120,20 @@ Usage:\n\
   gstep bind git:<rev> --from gstep:<step> [--git-notes]\n\
   gstep mcp\n\
   gstep close --prune\n\
+\n\
+Multi-agent collaboration:\n\
+  gstep agent-materialize <name>\n\
+  gstep agent-sync <name>\n\
+  gstep agent-drop <name>\n\
+  gstep rebase <name>\n\
+  gstep conflicts [--json]\n\
+  gstep conflict-show <id> [--checkout]\n\
+  gstep resolve <id> [--ours|--theirs|--from <selector>] [-m <message>]\n\
+  gstep claim <agent> <glob> [--ttl <secs>] [--release]\n\
+  gstep claims [--json]\n\
+  gstep note <agent> [<text...>] [--clear]\n\
+  gstep activity [--json] [--limit <n>]\n\
+  gstep gc\n\
 \n\
 Run `gstep <command> --help` for details on a command.\n\
 \n\
@@ -365,6 +392,168 @@ Options:\n\
   -h, --help  Show this help.",
             false,
         ),
+        "agent-materialize" => (
+            "gstep agent-materialize — Lay an agent layer into its view worktree\n\
+\n\
+Materializes the agent's current layer (base + overlay) into its view path so\n\
+the agent has a real working directory to edit. Any unsynced edits already in\n\
+the view are folded into the overlay first, so nothing is lost.\n\
+\n\
+Usage:\n\
+  gstep agent-materialize <name>\n\
+\n\
+Arguments:\n\
+  <name>      Agent layer name.\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "agent-sync" => (
+            "gstep agent-sync — Fold an agent's view edits back into its overlay\n\
+\n\
+Reconciles the agent's view worktree (including deletions) into its overlay so\n\
+the next commit captures exactly what the agent changed.\n\
+\n\
+Usage:\n\
+  gstep agent-sync <name>\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "agent-drop" => (
+            "gstep agent-drop — Remove an agent layer and reclaim its storage\n\
+\n\
+Usage:\n\
+  gstep agent-drop <name>\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "rebase" => (
+            "gstep rebase — Replay an agent's uncommitted changes onto the shared head\n\
+\n\
+Brings an idle agent layer up to date with the current shared head without\n\
+committing, so it stops being behind. A clean replay updates the layer; an\n\
+unmergeable one records a conflict to resolve.\n\
+\n\
+Usage:\n\
+  gstep rebase <name>\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "conflicts" => (
+            "gstep conflicts — List open merge conflicts\n\
+\n\
+Usage:\n\
+  gstep conflicts [--json]\n\
+\n\
+Options:\n\
+  --json      Emit JSON output.\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "conflict-show" => (
+            "gstep conflict-show — Show a conflict, optionally checking out its markers\n\
+\n\
+Usage:\n\
+  gstep conflict-show <id> [--checkout]\n\
+\n\
+Arguments:\n\
+  <id>         Conflict id, e.g. conflict-1.\n\
+\n\
+Options:\n\
+  --checkout   Lay the conflict-marker tree into the agent's view for editing.\n\
+  -h, --help   Show this help.",
+            false,
+        ),
+        "resolve" => (
+            "gstep resolve — Resolve an open conflict\n\
+\n\
+--theirs resets the agent onto the shared head (abandoning its change); --ours\n\
+lands the agent's clean tree; the default (or --from <selector>) lands a\n\
+hand-resolved tree, read from the agent's view unless a selector is given.\n\
+\n\
+Usage:\n\
+  gstep resolve <id> [--ours|--theirs|--from <selector>] [-m <message>] [--force]\n\
+\n\
+Options:\n\
+  --ours              Land the agent's own tree.\n\
+  --theirs            Abandon the agent's change; reset to the shared head.\n\
+  --from <selector>   Land the given selector's tree as the resolution.\n\
+  -m, --message <m>   Message for the resolution step.\n\
+  --force             Land even if conflict markers remain.\n\
+  -h, --help          Show this help.",
+            true,
+        ),
+        "claim" => (
+            "gstep claim — Take or release a path lease for an agent\n\
+\n\
+Usage:\n\
+  gstep claim <agent> <glob> [--ttl <secs>] [--release]\n\
+\n\
+Arguments:\n\
+  <agent>      Agent taking the lease.\n\
+  <glob>       Path glob (supports ?, *, **).\n\
+\n\
+Options:\n\
+  --ttl <secs> Lease expiry in seconds.\n\
+  --release    Release the matching lease instead of taking it.\n\
+  -h, --help   Show this help.",
+            false,
+        ),
+        "claims" => (
+            "gstep claims — List active path leases\n\
+\n\
+Usage:\n\
+  gstep claims [--json]\n\
+\n\
+Options:\n\
+  --json      Emit JSON output.\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "note" => (
+            "gstep note — Set or clear an agent's advertised intent\n\
+\n\
+Usage:\n\
+  gstep note <agent> <text...>\n\
+  gstep note <agent> --clear\n\
+\n\
+Options:\n\
+  --clear     Remove the agent's note.\n\
+  -h, --help  Show this help.",
+            false,
+        ),
+        "activity" => (
+            "gstep activity — Show a time-ordered feed of steps and conflicts\n\
+\n\
+Usage:\n\
+  gstep activity [--json] [--limit <n>]\n\
+\n\
+Options:\n\
+  --json        Emit JSON output.\n\
+  --limit <n>   Maximum number of events (default 20).\n\
+  -h, --help    Show this help.",
+            false,
+        ),
+        "gc" => (
+            "gstep gc — Reclaim leftover gstep metadata\n\
+\n\
+Expires stale claims, deletes temp index files, and removes orphaned on-disk\n\
+agent and view directories that no layer references.\n\
+\n\
+Usage:\n\
+  gstep gc\n\
+\n\
+Options:\n\
+  -h, --help  Show this help.",
+            false,
+        ),
         other => return Err(Error::new(format!("unknown command: {other}"))),
     };
     if show_selectors {
@@ -458,6 +647,7 @@ fn cmd_begin(args: &[String]) -> Result<()> {
         next_conflict: 1,
         agents: Vec::new(),
         conflicts: Vec::new(),
+        claims: Vec::new(),
     });
     save_state(&ctx, &state)?;
 
@@ -506,6 +696,7 @@ fn cmd_agent_create(args: &[String]) -> Result<()> {
     }
 
     let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
     let mut state = load_state(&ctx)?;
     if state.find_agent(&name).is_some() {
         return Err(Error::new(format!("agent already exists: {name}")));
@@ -514,6 +705,7 @@ fn cmd_agent_create(args: &[String]) -> Result<()> {
         Some(selector) => resolve_selector(&ctx, &state, &selector)?.tree,
         None => require_collab(&state)?.shared_head_tree.clone(),
     };
+    let base_step = current_step_id(&state);
     let rel_base = format!("agents/{name}");
     let upper_dir = format!("{rel_base}/upper");
     let tombstones_path = format!("{rel_base}/tombstones");
@@ -531,6 +723,9 @@ fn cmd_agent_create(args: &[String]) -> Result<()> {
         view_path,
         conflict: None,
         created_at: current_timestamp(),
+        note: None,
+        last_active: None,
+        base_step,
     });
     save_state(&ctx, &state)?;
 
@@ -539,6 +734,19 @@ fn cmd_agent_create(args: &[String]) -> Result<()> {
     println!("base tree: {}", agent.base_tree);
     println!("view path: {}", agent.view_path.as_deref().unwrap_or(""));
     Ok(())
+}
+
+/// The step id the session's current pointer resolves to, or None when the
+/// current pointer is the git anchor / a branch (no concrete step yet). Used to
+/// stamp an agent layer's `base_step` so "behind by N" can be computed.
+fn current_step_id(state: &State) -> Option<String> {
+    let current = state.current.as_deref()?;
+    let name = current.strip_prefix("gstep:")?;
+    if state.find_step(name).is_some() {
+        Some(name.to_string())
+    } else {
+        None
+    }
 }
 
 fn cmd_agent_status(args: &[String]) -> Result<()> {
@@ -574,7 +782,7 @@ fn cmd_agent_status(args: &[String]) -> Result<()> {
     if json {
         let entries = agents
             .iter()
-            .map(|agent| agent_status_json(&ctx, collab, agent))
+            .map(|agent| agent_status_json(&ctx, &state, agent))
             .collect::<Result<Vec<_>>>()?
             .join(",\n");
         println!(
@@ -585,25 +793,78 @@ fn cmd_agent_status(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    let now = now_secs();
     println!("Shared head tree: {}", collab.shared_head_tree);
-    for agent in agents {
+    for agent in &agents {
         let tree = agent_tree(&ctx, agent)?;
+        let dirty = tree != agent.base_tree;
         println!();
         println!("Agent: {}", agent.name);
         println!("  base:     {}", agent.base_tree);
         println!("  view:     {tree}");
+        println!("  dirty:    {}", if dirty { "yes" } else { "no" });
+        let behind = agent_behind_by(&state, agent);
         println!(
-            "  dirty:    {}",
-            if tree != agent.base_tree { "yes" } else { "no" }
+            "  behind:   {}",
+            if behind == 0 {
+                "up to date".to_string()
+            } else {
+                format!("{behind} step(s) — run gstep rebase {}", agent.name)
+            }
+        );
+        if let Some(note) = &agent.note {
+            println!("  note:     {note}");
+        }
+        println!(
+            "  active:   {}",
+            agent
+                .last_active
+                .as_deref()
+                .and_then(parse_unix_ts)
+                .map(|ts| format!("{} ago", format_age(now.saturating_sub(ts))))
+                .unwrap_or_else(|| "never".to_string())
         );
         println!(
             "  view path:{}",
             agent.view_path.as_deref().unwrap_or("not assigned")
         );
-        println!(
-            "  conflict: {}",
-            agent.conflict.as_deref().unwrap_or("none")
-        );
+        // Inline per-agent diff against the shared head.
+        if dirty {
+            let changes = diff_name_status(&ctx, &collab.shared_head_tree, &tree)?;
+            if !changes.is_empty() {
+                println!("  changes vs shared:");
+                for (status, path) in changes {
+                    println!("    {status} {path}");
+                }
+            }
+        }
+        match &agent.conflict {
+            Some(id) => {
+                println!("  conflict: {id}");
+                if let Some(conflict) = collab.conflicts.iter().find(|c| &c.id == id) {
+                    println!("    paths: {}", conflict.paths.join(", "));
+                }
+            }
+            None => println!("  conflict: none"),
+        }
+    }
+
+    // Active claims across the collaboration.
+    let active_claims: Vec<&Claim> = collab
+        .claims
+        .iter()
+        .filter(|claim| !claim.is_expired(now))
+        .collect();
+    if !active_claims.is_empty() {
+        println!();
+        println!("Claims:");
+        for claim in active_claims {
+            let ttl = match claim.expires_at {
+                Some(at) => format!(" (expires in {})", format_age(at.saturating_sub(now))),
+                None => String::new(),
+            };
+            println!("  {} -> {}{ttl}", claim.agent, claim.glob);
+        }
     }
     Ok(())
 }
@@ -614,6 +875,9 @@ fn commit_agent_changes(
     name: &str,
     message: String,
 ) -> Result<()> {
+    // If the agent has a materialized view, fold its worktree edits (including
+    // deletions) back into the overlay before computing the tree to commit.
+    sync_agent_view(ctx, state, name)?;
     let agent = state
         .find_agent(name)
         .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?
@@ -624,6 +888,10 @@ fn commit_agent_changes(
         println!("Agent {name} has no changes to commit");
         return Ok(());
     }
+
+    // Surface (or, under enforcement, refuse) edits that collide with another
+    // agent's working set or active claims before landing the merge.
+    warn_overlaps(ctx, state, name, &agent)?;
 
     match merge_agent_tree(ctx, &agent.base_tree, &shared_tree, &agent_tree)? {
         MergeOutcome::Clean { tree } => {
@@ -647,12 +915,21 @@ fn commit_agent_changes(
                 collab.shared_head_tree = tree.clone();
                 collab.conflicts.retain(|conflict| conflict.agent != name);
             }
+            let now = current_timestamp();
             if let Some(agent_mut) = state.find_agent_mut(name) {
                 agent_mut.base_tree = tree.clone();
+                agent_mut.base_step = Some(id.clone());
                 agent_mut.conflict = None;
+                agent_mut.last_active = Some(now);
                 clear_agent_overlay(ctx, agent_mut)?;
             }
+            let agent_snapshot = state.find_agent(name).cloned();
             save_state(ctx, state)?;
+            // Re-materialize the view onto the freshly advanced base so the
+            // agent keeps a clean working copy after the merge.
+            if let Some(agent_mut) = agent_snapshot {
+                rematerialize_view_if_present(ctx, &agent_mut)?;
+            }
             println!("Committed agent {name} as gstep:{id}");
             println!("shared head tree: {tree}");
         }
@@ -671,23 +948,235 @@ fn commit_agent_changes(
                     agent: name.to_string(),
                     base_tree: agent.base_tree.clone(),
                     shared_tree,
-                    agent_tree: tree,
+                    agent_tree,
+                    marker_tree: tree,
                     paths,
                     message: message.clone(),
                     created_at: current_timestamp(),
                 });
                 id
             };
+            let now = current_timestamp();
             if let Some(agent_mut) = state.find_agent_mut(name) {
                 agent_mut.conflict = Some(conflict_id.clone());
+                agent_mut.last_active = Some(now);
             }
             save_state(ctx, state)?;
             return Err(Error::new(format!(
-                "agent {name} has merge conflicts ({conflict_id})\n{message}"
+                "agent {name} has merge conflicts ({conflict_id})\n\
+                 Inspect with: gstep conflict-show {conflict_id}\n\
+                 Resolve with: gstep resolve {conflict_id} [--ours|--theirs]\n{message}"
             )));
         }
     }
     Ok(())
+}
+
+/// `gstep agent-materialize <name>` — give the agent a working directory by
+/// laying its current layer (base + overlay) into its view path. If the view
+/// already holds unsynced edits, those are folded in first so nothing is lost.
+fn cmd_agent_materialize(args: &[String]) -> Result<()> {
+    let name = single_name_arg(args, "agent-materialize")?;
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    let agent = state
+        .find_agent(&name)
+        .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?
+        .clone();
+    let view = agent_view_dir(&agent)
+        .ok_or_else(|| Error::new(format!("agent {name} has no view path assigned")))?;
+
+    // Preserve any edits already present in the view before we re-lay the tree.
+    if view.exists() {
+        sync_agent_overlay(&ctx, &agent)?;
+    }
+    let agent = state.find_agent(&name).expect("agent exists").clone();
+    let tree = agent_tree(&ctx, &agent)?;
+    materialize_tree_clean(&ctx, &tree, &view)?;
+
+    if let Some(agent_mut) = state.find_agent_mut(&name) {
+        agent_mut.last_active = Some(current_timestamp());
+    }
+    save_state(&ctx, &state)?;
+    println!("Materialized agent {name} view at {}", view.display());
+    println!("view tree: {tree}");
+    println!("Edit files there, then run: gstep agent-sync {name} (or commit as the agent).");
+    Ok(())
+}
+
+/// `gstep agent-sync <name>` — fold the agent's view worktree edits (including
+/// deletions) back into its overlay, so the next commit captures them.
+fn cmd_agent_sync(args: &[String]) -> Result<()> {
+    let name = single_name_arg(args, "agent-sync")?;
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    let agent = state
+        .find_agent(&name)
+        .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?
+        .clone();
+    let changes = sync_agent_overlay(&ctx, &agent)?.ok_or_else(|| {
+        Error::new(format!(
+            "agent {name} has no materialized view; run gstep agent-materialize {name} first"
+        ))
+    })?;
+
+    if let Some(agent_mut) = state.find_agent_mut(&name) {
+        agent_mut.last_active = Some(current_timestamp());
+    }
+    save_state(&ctx, &state)?;
+
+    let modified = changes.iter().filter(|(status, _)| *status != 'D').count();
+    let deleted = changes.iter().filter(|(status, _)| *status == 'D').count();
+    println!("Synced agent {name} view into its overlay");
+    println!("  changed: {modified}");
+    println!("  deleted: {deleted}");
+    for (status, path) in &changes {
+        println!("  {status} {path}");
+    }
+    Ok(())
+}
+
+/// Parse a command that takes exactly one positional name argument.
+fn single_name_arg(args: &[String], command: &str) -> Result<String> {
+    let mut name = None;
+    for arg in args {
+        if name.is_none() && !arg.starts_with('-') {
+            name = Some(arg.clone());
+        } else {
+            return Err(Error::new(format!("unexpected {command} argument: {arg}")));
+        }
+    }
+    name.ok_or_else(|| Error::new(format!("{command} requires an agent name")))
+}
+
+/// Whether the running process should hard-refuse edits to another agent's
+/// active claim, rather than only warning. Opt-in so the cooperative default is
+/// unchanged.
+fn claims_enforced() -> bool {
+    matches!(
+        env::var("GSTEP_ENFORCE_CLAIMS").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
+}
+
+/// Warn (or, under enforcement, refuse) when the committing agent's edits
+/// collide with another agent's working set or an active claim it does not own.
+/// Overlap and claim collisions are advisory by default because the agents are
+/// cooperative; the merge step is still the source of truth.
+fn warn_overlaps(ctx: &Context, state: &State, name: &str, agent: &Agent) -> Result<()> {
+    let collab = require_collab(state)?;
+    let this_tree = agent_tree(ctx, agent)?;
+    let changed: BTreeSet<String> = diff_name_status(ctx, &agent.base_tree, &this_tree)?
+        .into_iter()
+        .map(|(_, path)| path)
+        .collect();
+    if changed.is_empty() {
+        return Ok(());
+    }
+
+    // Overlap with another agent's in-flight (uncommitted) edits.
+    for other in &collab.agents {
+        if other.name == name {
+            continue;
+        }
+        let other_tree = agent_tree(ctx, other)?;
+        if other_tree == other.base_tree {
+            continue;
+        }
+        let other_changed: BTreeSet<String> = diff_name_status(ctx, &other.base_tree, &other_tree)?
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        let overlap: Vec<&String> = changed.intersection(&other_changed).collect();
+        if !overlap.is_empty() {
+            eprintln!(
+                "warning: agent {name} and agent {} both edit: {}",
+                other.name,
+                overlap
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
+    // Collision with another agent's active path claim.
+    let now = now_secs();
+    let mut blocked = Vec::new();
+    for claim in &collab.claims {
+        if claim.agent == name || claim.is_expired(now) {
+            continue;
+        }
+        let hits: Vec<&String> = changed
+            .iter()
+            .filter(|p| glob_match(&claim.glob, p))
+            .collect();
+        if hits.is_empty() {
+            continue;
+        }
+        let joined = hits
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "warning: agent {name} edits paths claimed by agent {} ({}): {joined}",
+            claim.agent, claim.glob
+        );
+        blocked.push(format!("{} (claim {})", joined, claim.agent));
+    }
+    if claims_enforced() && !blocked.is_empty() {
+        return Err(Error::new(format!(
+            "agent {name} edits claimed paths: {}\nclaim enforcement (GSTEP_ENFORCE_CLAIMS) is on",
+            blocked.join("; ")
+        )));
+    }
+    Ok(())
+}
+
+/// Minimal glob matcher over `/`-separated paths supporting `?`, `*` (any run
+/// of non-`/` characters), and `**` (any run including `/`). Sufficient for
+/// path leases like `src/**` or `auth/*.rs`.
+fn glob_match(pattern: &str, text: &str) -> bool {
+    glob_match_bytes(pattern.as_bytes(), text.as_bytes())
+}
+
+fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
+    let mut p = 0;
+    let mut t = 0;
+    // Backtracking state for the most recent `*` (single-segment wildcard).
+    let mut star: Option<(usize, usize)> = None;
+    // Whether that pending star is a `**` (crosses `/`).
+    let mut star_double = false;
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == text[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == b'*' {
+            let double = p + 1 < pattern.len() && pattern[p + 1] == b'*';
+            star = Some((p, t));
+            star_double = double;
+            p += if double { 2 } else { 1 };
+        } else if let Some((sp, st)) = star {
+            // Extend the wildcard by one char, unless a single `*` would have to
+            // swallow a path separator.
+            if !star_double && text[st] == b'/' {
+                return false;
+            }
+            p = sp + if star_double { 2 } else { 1 };
+            t = st + 1;
+            star = Some((sp, t));
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+    p == pattern.len()
 }
 
 fn cmd_status(args: &[String]) -> Result<()> {
@@ -866,7 +1355,10 @@ fn cmd_show(args: &[String]) -> Result<()> {
             }
             if let Some(session_id) = &step.session_id {
                 println!("session {session_id}");
-                println!("(run `gstep context gstep:{}` to recover its session)", step.id);
+                println!(
+                    "(run `gstep context gstep:{}` to recover its session)",
+                    step.id
+                );
             }
         }
         ResolvedKind::GstepBase => {
@@ -924,6 +1416,9 @@ fn cmd_diff(args: &[String]) -> Result<()> {
 fn cmd_commit(args: &[String]) -> Result<()> {
     let commit_args = parse_commit_args(args)?;
     let ctx = Context::discover()?;
+    // Hold the state lock across the whole read-modify-write so concurrent
+    // agent commits cannot clobber each other's step / shared-head updates.
+    let _lock = StateLock::acquire(&ctx)?;
     let mut state = load_state(&ctx)?;
     if let Some(agent) = current_agent_name(&state)? {
         return commit_agent_changes(&ctx, &mut state, &agent, commit_args.message);
@@ -948,12 +1443,11 @@ fn cmd_commit(args: &[String]) -> Result<()> {
     save_state(&ctx, &state)?;
 
     println!("Created gstep micro step gstep:{id}");
-    match &identity {
-        Some(i) => match &i.session_id {
+    if let Some(i) = &identity {
+        match &i.session_id {
             Some(sid) => println!("agent: {} session: {}", i.agent, sid),
             None => println!("agent: {} (no session id detected)", i.agent),
-        },
-        None => {}
+        }
     }
     Ok(())
 }
@@ -1197,8 +1691,8 @@ fn cmd_promote(args: &[String]) -> Result<()> {
         index += 1;
     }
 
-    let selector = selector
-        .ok_or_else(|| Error::new("promote requires a gstep:<step> selector"))?;
+    let selector =
+        selector.ok_or_else(|| Error::new("promote requires a gstep:<step> selector"))?;
     if !selector.starts_with("gstep:") {
         return Err(Error::new("promote only accepts gstep:<step> selectors"));
     }
@@ -1276,6 +1770,824 @@ fn cmd_close(args: &[String]) -> Result<()> {
         fs::remove_dir_all(&ctx.gstep_dir)?;
     }
     println!("Closed gstep session and pruned local gstep metadata");
+    Ok(())
+}
+
+// ===== Conflict resolution loop (P1-1) =====
+
+/// `gstep conflicts [--json]` — list the open merge conflicts recorded when
+/// agent commits could not be merged cleanly into the shared head.
+fn cmd_conflicts(args: &[String]) -> Result<()> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            other => return Err(Error::new(format!("unknown conflicts option: {other}"))),
+        }
+    }
+    let ctx = Context::discover()?;
+    let state = load_state(&ctx)?;
+    let collab = require_collab(&state)?;
+    let now = now_secs();
+
+    if json {
+        let entries = collab
+            .conflicts
+            .iter()
+            .map(|conflict| {
+                let paths = conflict
+                    .paths
+                    .iter()
+                    .map(|path| json_string(path))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "    {{\"id\": {}, \"agent\": {}, \"paths\": [{}], \"created_at\": {}}}",
+                    json_string(&conflict.id),
+                    json_string(&conflict.agent),
+                    paths,
+                    json_string(&conflict.created_at)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        println!("{{\n  \"conflicts\": [\n{entries}\n  ]\n}}");
+        return Ok(());
+    }
+
+    if collab.conflicts.is_empty() {
+        println!("No open conflicts.");
+        return Ok(());
+    }
+    println!("Open conflicts:");
+    for conflict in &collab.conflicts {
+        let age = parse_unix_ts(&conflict.created_at)
+            .map(|ts| format!(" ({} ago)", format_age(now.saturating_sub(ts))))
+            .unwrap_or_default();
+        println!("  {} agent {}{age}", conflict.id, conflict.agent);
+        println!("    paths: {}", conflict.paths.join(", "));
+        println!(
+            "    resolve: gstep resolve {} [--ours|--theirs|--from <selector>]",
+            conflict.id
+        );
+    }
+    Ok(())
+}
+
+/// `gstep conflict-show <id> [--checkout]` — show a conflict's detail, and with
+/// `--checkout` lay the conflict-marker tree into the agent's view so it can be
+/// resolved by hand in place.
+fn cmd_conflict_show(args: &[String]) -> Result<()> {
+    let mut id = None;
+    let mut checkout = false;
+    for arg in args {
+        match arg.as_str() {
+            "--checkout" => checkout = true,
+            other if id.is_none() && !other.starts_with('-') => id = Some(other.to_string()),
+            other => {
+                return Err(Error::new(format!(
+                    "unexpected conflict-show argument: {other}"
+                )));
+            }
+        }
+    }
+    let id = id.ok_or_else(|| Error::new("conflict-show requires a conflict id"))?;
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    let conflict = find_conflict(require_collab(&state)?, &id)?.clone();
+
+    println!("Conflict {}", conflict.id);
+    println!("  agent:       {}", conflict.agent);
+    println!("  base tree:   {}", conflict.base_tree);
+    println!("  shared tree: {}", conflict.shared_tree);
+    println!("  agent tree:  {}", conflict.agent_tree);
+    println!("  marker tree: {}", conflict.marker_tree);
+    println!("  paths:");
+    for path in &conflict.paths {
+        println!("    {path}");
+    }
+    println!("  message:");
+    for line in conflict.message.lines() {
+        println!("    {line}");
+    }
+
+    if checkout {
+        let agent = state
+            .find_agent(&conflict.agent)
+            .ok_or_else(|| Error::new(format!("unknown agent: {}", conflict.agent)))?
+            .clone();
+        let view = agent_view_dir(&agent).ok_or_else(|| {
+            Error::new(format!(
+                "agent {} has no view path to check out into",
+                conflict.agent
+            ))
+        })?;
+        materialize_tree_clean(&ctx, &conflict.marker_tree, &view)?;
+        if let Some(agent_mut) = state.find_agent_mut(&conflict.agent) {
+            agent_mut.last_active = Some(current_timestamp());
+        }
+        save_state(&ctx, &state)?;
+        println!();
+        println!("Checked out conflict markers into {}", view.display());
+        println!(
+            "Edit the marked files, then run: gstep resolve {} (reads the resolved view)",
+            conflict.id
+        );
+    }
+    Ok(())
+}
+
+/// `gstep resolve <id> [--ours|--theirs|--from <selector>] [-m <msg>] [--force]`
+/// — close a conflict. `--theirs` abandons the agent's change and resets it to
+/// the shared head; `--ours` lands the agent's clean tree; the default (or
+/// `--from`) lands a hand-resolved tree (read from the agent's view, or the
+/// given selector) as a new shared step.
+fn cmd_resolve(args: &[String]) -> Result<()> {
+    let mut id = None;
+    let mut mode = ResolveMode::Manual;
+    let mut from = None;
+    let mut message = None;
+    let mut force = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--ours" => mode = ResolveMode::Ours,
+            "--theirs" => mode = ResolveMode::Theirs,
+            "--from" => {
+                index += 1;
+                from = Some(
+                    args.get(index)
+                        .ok_or_else(|| Error::new("--from requires a selector"))?
+                        .clone(),
+                );
+                mode = ResolveMode::From;
+            }
+            "-m" | "--message" => {
+                index += 1;
+                message = Some(
+                    args.get(index)
+                        .ok_or_else(|| Error::new("resolve message flag requires a value"))?
+                        .clone(),
+                );
+            }
+            "--force" => force = true,
+            other if id.is_none() && !other.starts_with('-') => id = Some(other.to_string()),
+            other => return Err(Error::new(format!("unexpected resolve argument: {other}"))),
+        }
+        index += 1;
+    }
+    let id = id.ok_or_else(|| Error::new("resolve requires a conflict id"))?;
+
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    let conflict = find_conflict(require_collab(&state)?, &id)?.clone();
+    let agent_name = conflict.agent.clone();
+    let shared = require_collab(&state)?.shared_head_tree.clone();
+
+    // --theirs: the agent abandons its change; just reset it onto the current
+    // shared head. Nothing new lands in the shared timeline.
+    if matches!(mode, ResolveMode::Theirs) {
+        reset_agent_to_shared(&ctx, &mut state, &agent_name, &shared, &id)?;
+        save_state(&ctx, &state)?;
+        let agent = state.find_agent(&agent_name).cloned();
+        if let Some(agent) = agent {
+            rematerialize_view_if_present(&ctx, &agent)?;
+        }
+        println!("Resolved {id} with --theirs: agent {agent_name} reset to the shared head.");
+        return Ok(());
+    }
+
+    // The resolved content that should become the new shared head.
+    let resolved_tree = match mode {
+        ResolveMode::Ours => conflict.agent_tree.clone(),
+        ResolveMode::From => {
+            let selector = from.as_ref().expect("--from sets a selector");
+            resolve_selector(&ctx, &state, selector)?.tree
+        }
+        ResolveMode::Manual => {
+            let agent = state
+                .find_agent(&agent_name)
+                .ok_or_else(|| Error::new(format!("unknown agent: {agent_name}")))?
+                .clone();
+            let view = agent_view_dir(&agent).ok_or_else(|| {
+                Error::new(format!(
+                    "agent {agent_name} has no view to read a manual resolution from; \
+                     pass --ours/--theirs/--from <selector>, or run gstep conflict-show {id} --checkout first"
+                ))
+            })?;
+            if !view.exists() {
+                return Err(Error::new(format!(
+                    "agent {agent_name} view is not materialized; run gstep conflict-show {id} --checkout, resolve the markers, then retry"
+                )));
+            }
+            dir_tree(&ctx, &view)?
+        }
+        ResolveMode::Theirs => unreachable!("handled above"),
+    };
+
+    // Guard against landing unresolved conflict markers.
+    if !force {
+        let leftover = paths_with_markers(&ctx, &resolved_tree, &conflict.paths)?;
+        if !leftover.is_empty() {
+            return Err(Error::new(format!(
+                "resolved tree still has conflict markers in: {}\nfix them, or pass --force to land as-is",
+                leftover.join(", ")
+            )));
+        }
+    }
+
+    // Land the resolution as a new shared-head step authored by the agent.
+    let parent = state
+        .current
+        .clone()
+        .unwrap_or_else(|| format!("git:{}", state.anchor));
+    let step_id = format!("step-{}", state.next_step);
+    state.next_step += 1;
+    let resolve_message = message.unwrap_or_else(|| format!("resolve {id} ({agent_name})"));
+    state.steps.push(Step {
+        id: step_id.clone(),
+        parent,
+        message: resolve_message,
+        tree: resolved_tree.clone(),
+        created_at: current_timestamp(),
+        agent: Some(agent_name.clone()),
+        session_id: None,
+    });
+    state.current = Some(format!("gstep:{step_id}"));
+    if let Some(collab) = state.collab.as_mut() {
+        collab.shared_head_tree = resolved_tree.clone();
+        collab.conflicts.retain(|conflict| conflict.id != id);
+    }
+    let now = current_timestamp();
+    if let Some(agent_mut) = state.find_agent_mut(&agent_name) {
+        agent_mut.base_tree = resolved_tree.clone();
+        agent_mut.base_step = Some(step_id.clone());
+        agent_mut.conflict = None;
+        agent_mut.last_active = Some(now);
+        clear_agent_overlay(&ctx, agent_mut)?;
+    }
+    let agent = state.find_agent(&agent_name).cloned();
+    save_state(&ctx, &state)?;
+    if let Some(agent) = agent {
+        rematerialize_view_if_present(&ctx, &agent)?;
+    }
+    println!("Resolved {id} as gstep:{step_id}");
+    println!("shared head tree: {resolved_tree}");
+    Ok(())
+}
+
+enum ResolveMode {
+    Ours,
+    Theirs,
+    From,
+    Manual,
+}
+
+/// Reset an agent onto the shared head: clear its overlay, conflict, and point
+/// its base at `shared`. Used by `--theirs` resolution and by `agent-drop`'s
+/// cleanup. Does not advance the shared timeline.
+fn reset_agent_to_shared(
+    ctx: &Context,
+    state: &mut State,
+    agent_name: &str,
+    shared: &str,
+    conflict_id: &str,
+) -> Result<()> {
+    if let Some(collab) = state.collab.as_mut() {
+        collab
+            .conflicts
+            .retain(|conflict| conflict.id != conflict_id);
+    }
+    let latest_step = state.steps.last().map(|step| step.id.clone());
+    let now = current_timestamp();
+    if let Some(agent_mut) = state.find_agent_mut(agent_name) {
+        agent_mut.base_tree = shared.to_string();
+        agent_mut.base_step = latest_step;
+        agent_mut.conflict = None;
+        agent_mut.last_active = Some(now);
+        clear_agent_overlay(ctx, agent_mut)?;
+    }
+    Ok(())
+}
+
+fn find_conflict<'a>(collab: &'a Collab, id: &str) -> Result<&'a Conflict> {
+    collab
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.id == id)
+        .ok_or_else(|| Error::new(format!("unknown conflict: {id}")))
+}
+
+/// Of `paths`, return those whose blob in `tree` still carries a Git conflict
+/// marker (`<<<<<<<`), so a half-resolved tree is not silently landed.
+fn paths_with_markers(ctx: &Context, tree: &str, paths: &[String]) -> Result<Vec<String>> {
+    let mut leftover = Vec::new();
+    for path in paths {
+        let spec = format!("{tree}:{path}");
+        if let Some(contents) = git_optional(ctx, &["show", spec.as_str()])?
+            && contents.lines().any(|line| line.starts_with("<<<<<<<"))
+        {
+            leftover.push(path.clone());
+        }
+    }
+    Ok(leftover)
+}
+
+// ===== Claims / leases (P1-2) =====
+
+/// `gstep claim <agent> <glob> [--ttl <secs>] [--release]` — take or release a
+/// path lease so peers get an up-front warning before editing the same files.
+fn cmd_claim(args: &[String]) -> Result<()> {
+    let mut positional = Vec::new();
+    let mut ttl = None;
+    let mut release = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--ttl" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| Error::new("--ttl requires a value in seconds"))?;
+                ttl = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| Error::new("--ttl must be a whole number of seconds"))?,
+                );
+            }
+            "--release" => release = true,
+            other if !other.starts_with('-') => positional.push(other.to_string()),
+            other => return Err(Error::new(format!("unknown claim option: {other}"))),
+        }
+        index += 1;
+    }
+    if positional.len() != 2 {
+        return Err(Error::new("claim requires <agent> <glob>"));
+    }
+    let agent = positional[0].clone();
+    let glob = positional[1].clone();
+
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    if state.find_agent(&agent).is_none() {
+        return Err(Error::new(format!("unknown agent: {agent}")));
+    }
+    let collab = require_collab_mut(&mut state)?;
+    if release {
+        let before = collab.claims.len();
+        collab
+            .claims
+            .retain(|claim| !(claim.agent == agent && claim.glob == glob));
+        let removed = before - collab.claims.len();
+        save_state(&ctx, &state)?;
+        println!("Released {removed} claim(s) for agent {agent} on {glob}");
+        return Ok(());
+    }
+    // Replace any identical existing lease so re-claiming refreshes the TTL.
+    collab
+        .claims
+        .retain(|claim| !(claim.agent == agent && claim.glob == glob));
+    let expires_at = ttl.map(|secs| now_secs() + secs);
+    collab.claims.push(Claim {
+        agent: agent.clone(),
+        glob: glob.clone(),
+        created_at: current_timestamp(),
+        expires_at,
+    });
+    save_state(&ctx, &state)?;
+    match ttl {
+        Some(secs) => println!("Agent {agent} claimed {glob} (expires in {secs}s)"),
+        None => println!("Agent {agent} claimed {glob}"),
+    }
+    Ok(())
+}
+
+/// `gstep claims [--json]` — list active path leases (expired ones are hidden).
+fn cmd_claims(args: &[String]) -> Result<()> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            other => return Err(Error::new(format!("unknown claims option: {other}"))),
+        }
+    }
+    let ctx = Context::discover()?;
+    let state = load_state(&ctx)?;
+    let collab = require_collab(&state)?;
+    let now = now_secs();
+    let active: Vec<&Claim> = collab
+        .claims
+        .iter()
+        .filter(|claim| !claim.is_expired(now))
+        .collect();
+
+    if json {
+        let entries = active
+            .iter()
+            .map(|claim| {
+                let expires = claim
+                    .expires_at
+                    .map(|at| at.to_string())
+                    .unwrap_or_else(|| "null".to_string());
+                format!(
+                    "    {{\"agent\": {}, \"glob\": {}, \"expires_at\": {}}}",
+                    json_string(&claim.agent),
+                    json_string(&claim.glob),
+                    expires
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        println!("{{\n  \"claims\": [\n{entries}\n  ]\n}}");
+        return Ok(());
+    }
+
+    if active.is_empty() {
+        println!("No active claims.");
+        return Ok(());
+    }
+    println!("Active claims:");
+    for claim in active {
+        let ttl = match claim.expires_at {
+            Some(at) => format!(" (expires in {})", format_age(at.saturating_sub(now))),
+            None => String::new(),
+        };
+        println!("  {} -> {}{ttl}", claim.agent, claim.glob);
+    }
+    Ok(())
+}
+
+// ===== Lifecycle: drop, gc, rebase (P2) =====
+
+/// `gstep agent-drop <name>` — remove an agent layer and reclaim its on-disk
+/// overlay, view, index, conflicts, and claims.
+fn cmd_agent_drop(args: &[String]) -> Result<()> {
+    let name = single_name_arg(args, "agent-drop")?;
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    let agent = state
+        .find_agent(&name)
+        .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?
+        .clone();
+
+    // Reclaim on-disk artifacts before dropping the record. The overlay,
+    // tombstones, and index all live under agents/<name>, so remove that whole
+    // directory rather than its individual files.
+    let upper_dir = ctx.gstep_dir.join(&agent.upper_dir);
+    if let Some(agent_base) = upper_dir.parent() {
+        let _ = fs::remove_dir_all(agent_base);
+    } else {
+        let _ = fs::remove_dir_all(&upper_dir);
+    }
+    if let Some(view) = agent_view_dir(&agent)
+        && view.exists()
+    {
+        let _ = fs::remove_dir_all(&view);
+    }
+
+    let collab = require_collab_mut(&mut state)?;
+    collab.agents.retain(|candidate| candidate.name != name);
+    collab.conflicts.retain(|conflict| conflict.agent != name);
+    collab.claims.retain(|claim| claim.agent != name);
+    save_state(&ctx, &state)?;
+    println!("Dropped agent {name} and reclaimed its layer");
+    Ok(())
+}
+
+/// `gstep gc` — reclaim leftover state: expire stale claims, delete temp index
+/// files, and remove orphaned on-disk agent/view directories with no record.
+fn cmd_gc(args: &[String]) -> Result<()> {
+    if let Some(arg) = args.first() {
+        return Err(Error::new(format!("unknown gc option: {arg}")));
+    }
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+
+    // 1. Expire claims whose TTL has passed.
+    let now = now_secs();
+    let mut expired = 0;
+    if let Some(collab) = state.collab.as_mut() {
+        let before = collab.claims.len();
+        collab.claims.retain(|claim| !claim.is_expired(now));
+        expired = before - collab.claims.len();
+    }
+    save_state(&ctx, &state)?;
+
+    // 2. Remove temp index files left behind by interrupted operations.
+    let mut tmp_removed = 0;
+    let tmp_dir = ctx.gstep_dir.join("tmp");
+    if let Ok(entries) = fs::read_dir(&tmp_dir) {
+        for entry in entries.flatten() {
+            if fs::remove_file(entry.path()).is_ok() {
+                tmp_removed += 1;
+            }
+        }
+    }
+
+    // 3. Remove on-disk agent dirs with no corresponding layer in state.
+    let known: BTreeSet<String> = state
+        .collab
+        .as_ref()
+        .map(|collab| collab.agents.iter().map(|a| a.name.clone()).collect())
+        .unwrap_or_default();
+    let mut orphan_agents = 0;
+    let agents_dir = ctx.gstep_dir.join("agents");
+    if let Ok(entries) = fs::read_dir(&agents_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !known.contains(&name) && fs::remove_dir_all(entry.path()).is_ok() {
+                orphan_agents += 1;
+            }
+        }
+    }
+
+    // 4. Remove orphaned view dirs (no agent points at them).
+    let live_views: BTreeSet<PathBuf> = state
+        .collab
+        .as_ref()
+        .map(|collab| collab.agents.iter().filter_map(agent_view_dir).collect())
+        .unwrap_or_default();
+    let mut orphan_views = 0;
+    let views_root = ctx.gstep_dir.join("views");
+    if let Ok(sessions) = fs::read_dir(&views_root) {
+        for session in sessions.flatten() {
+            if let Ok(views) = fs::read_dir(session.path()) {
+                for view in views.flatten() {
+                    if !live_views.contains(&view.path()) && fs::remove_dir_all(view.path()).is_ok()
+                    {
+                        orphan_views += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    println!("Garbage collected gstep metadata:");
+    println!("  expired claims:  {expired}");
+    println!("  temp files:      {tmp_removed}");
+    println!("  orphan agents:   {orphan_agents}");
+    println!("  orphan views:    {orphan_views}");
+    Ok(())
+}
+
+/// `gstep rebase <name>` (a.k.a. pull) — replay an idle agent's uncommitted
+/// changes on top of the current shared head without committing, so it stops
+/// being behind. A clean replay updates the layer's base and overlay; an
+/// unmergeable one records a conflict to resolve.
+fn cmd_agent_rebase(args: &[String]) -> Result<()> {
+    let name = single_name_arg(args, "rebase")?;
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    state
+        .find_agent(&name)
+        .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?;
+
+    // Fold any view edits in first so the replay sees the agent's real state.
+    sync_agent_view(&ctx, &state, &name)?;
+    let agent = state.find_agent(&name).expect("agent exists").clone();
+    let shared = require_collab(&state)?.shared_head_tree.clone();
+    if agent.base_tree == shared {
+        println!("Agent {name} is already on the shared head; nothing to rebase");
+        return Ok(());
+    }
+    let layer_tree = agent_tree(&ctx, &agent)?;
+
+    match merge_agent_tree(&ctx, &agent.base_tree, &shared, &layer_tree)? {
+        MergeOutcome::Clean { tree } => {
+            // Point the layer at the new base, then rebuild its overlay so the
+            // agent's uncommitted delta (merged - shared) survives the move.
+            let latest_step = state.steps.last().map(|step| step.id.clone());
+            if let Some(agent_mut) = state.find_agent_mut(&name) {
+                agent_mut.base_tree = shared.clone();
+                agent_mut.base_step = latest_step;
+                agent_mut.conflict = None;
+                agent_mut.last_active = Some(current_timestamp());
+            }
+            let rebased = state.find_agent(&name).expect("agent exists").clone();
+            rebuild_overlay_from_tree(&ctx, &rebased, &tree)?;
+            rematerialize_view_if_present(&ctx, &rebased)?;
+            save_state(&ctx, &state)?;
+            println!("Rebased agent {name} onto the shared head");
+            println!("layer tree: {tree}");
+        }
+        MergeOutcome::Conflicted {
+            tree,
+            paths,
+            message,
+        } => {
+            let conflict_id = {
+                let collab = require_collab_mut(&mut state)?;
+                let id = format!("conflict-{}", collab.next_conflict);
+                collab.next_conflict += 1;
+                collab.conflicts.retain(|conflict| conflict.agent != name);
+                collab.conflicts.push(Conflict {
+                    id: id.clone(),
+                    agent: name.clone(),
+                    base_tree: agent.base_tree.clone(),
+                    shared_tree: shared.clone(),
+                    agent_tree: layer_tree.clone(),
+                    marker_tree: tree,
+                    paths,
+                    message: message.clone(),
+                    created_at: current_timestamp(),
+                });
+                id
+            };
+            if let Some(agent_mut) = state.find_agent_mut(&name) {
+                agent_mut.conflict = Some(conflict_id.clone());
+                agent_mut.last_active = Some(current_timestamp());
+            }
+            save_state(&ctx, &state)?;
+            return Err(Error::new(format!(
+                "agent {name} cannot rebase cleanly ({conflict_id})\n\
+                 Resolve with: gstep resolve {conflict_id} [--ours|--theirs]\n{message}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Rebuild an agent's overlay (upper + tombstones) so that `agent_tree` equals
+/// `tree`, given the agent's base is already set. Materializes `tree` into a
+/// scratch dir and reuses the same view→overlay reconciliation as sync.
+fn rebuild_overlay_from_tree(ctx: &Context, agent: &Agent, tree: &str) -> Result<()> {
+    let scratch = ctx.gstep_dir.join("tmp").join(format!(
+        "rebase-{}-{}",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&scratch);
+    materialize_tree(ctx, tree, &scratch)?;
+    let changes = diff_name_status(ctx, &agent.base_tree, tree)?;
+    clear_agent_overlay(ctx, agent)?;
+    let upper_dir = ctx.gstep_dir.join(&agent.upper_dir);
+    let mut tombstones = Vec::new();
+    for (status, path) in &changes {
+        if *status == 'D' {
+            tombstones.push(path.clone());
+        } else {
+            copy_into_upper(&scratch, &upper_dir, path)?;
+        }
+    }
+    let mut body = tombstones.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    fs::write(ctx.gstep_dir.join(&agent.tombstones_path), body)?;
+    let _ = fs::remove_dir_all(&scratch);
+    Ok(())
+}
+
+// ===== Per-agent intent notes (P3) =====
+
+/// `gstep note <agent> [<text...>] [--clear]` — set or clear the agent's
+/// advertised intent, shown to peers in status and `context --agent`.
+fn cmd_note(args: &[String]) -> Result<()> {
+    let mut agent = None;
+    let mut words = Vec::new();
+    let mut clear = false;
+    for arg in args {
+        match arg.as_str() {
+            "--clear" => clear = true,
+            other if agent.is_none() => agent = Some(other.to_string()),
+            other => words.push(other.to_string()),
+        }
+    }
+    let agent = agent.ok_or_else(|| Error::new("note requires an agent name"))?;
+    let ctx = Context::discover()?;
+    let _lock = StateLock::acquire(&ctx)?;
+    let mut state = load_state(&ctx)?;
+    if state.find_agent(&agent).is_none() {
+        return Err(Error::new(format!("unknown agent: {agent}")));
+    }
+    let note = if clear {
+        None
+    } else if words.is_empty() {
+        return Err(Error::new(
+            "note requires text, or pass --clear to remove it",
+        ));
+    } else {
+        Some(words.join(" "))
+    };
+    if let Some(agent_mut) = state.find_agent_mut(&agent) {
+        agent_mut.note = note.clone();
+        agent_mut.last_active = Some(current_timestamp());
+    }
+    save_state(&ctx, &state)?;
+    match note {
+        Some(text) => println!("Set note for agent {agent}: {text}"),
+        None => println!("Cleared note for agent {agent}"),
+    }
+    Ok(())
+}
+
+// ===== Activity feed (P2) =====
+
+/// `gstep activity [--json] [--limit N]` — a time-ordered feed of recent steps
+/// (with their authoring agent) and recorded conflicts, newest first.
+fn cmd_activity(args: &[String]) -> Result<()> {
+    let mut json = false;
+    let mut limit = 20usize;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--limit" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| Error::new("--limit requires a value"))?;
+                limit = value
+                    .parse()
+                    .map_err(|_| Error::new("--limit must be a whole number"))?;
+            }
+            other => return Err(Error::new(format!("unknown activity option: {other}"))),
+        }
+        index += 1;
+    }
+
+    let ctx = Context::discover()?;
+    let state = load_state(&ctx)?;
+    let now = now_secs();
+
+    struct Event {
+        ts: u64,
+        kind: &'static str,
+        id: String,
+        agent: String,
+        detail: String,
+    }
+    let mut events = Vec::new();
+    for step in &state.steps {
+        events.push(Event {
+            ts: parse_unix_ts(&step.created_at).unwrap_or(0),
+            kind: "step",
+            id: step.id.clone(),
+            agent: step.agent.clone().unwrap_or_default(),
+            detail: first_line_or_empty(&step.message).to_string(),
+        });
+    }
+    if let Some(collab) = state.collab.as_ref() {
+        for conflict in &collab.conflicts {
+            events.push(Event {
+                ts: parse_unix_ts(&conflict.created_at).unwrap_or(0),
+                kind: "conflict",
+                id: conflict.id.clone(),
+                agent: conflict.agent.clone(),
+                detail: conflict.paths.join(", "),
+            });
+        }
+    }
+    // Newest first; ties keep insertion order deterministic.
+    events.sort_by_key(|event| std::cmp::Reverse(event.ts));
+    events.truncate(limit);
+
+    if json {
+        let entries = events
+            .iter()
+            .map(|event| {
+                format!(
+                    "    {{\"kind\": {}, \"id\": {}, \"agent\": {}, \"detail\": {}, \"ts\": {}}}",
+                    json_string(event.kind),
+                    json_string(&event.id),
+                    json_string(&event.agent),
+                    json_string(&event.detail),
+                    event.ts
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",\n");
+        println!("{{\n  \"activity\": [\n{entries}\n  ]\n}}");
+        return Ok(());
+    }
+
+    if events.is_empty() {
+        println!("No activity yet.");
+        return Ok(());
+    }
+    println!("Activity (newest first):");
+    for event in events {
+        let age = if event.ts == 0 {
+            String::new()
+        } else {
+            format!(" {} ago", format_age(now.saturating_sub(event.ts)))
+        };
+        let agent = if event.agent.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", event.agent)
+        };
+        println!("  {:<9} {}{agent}{age}", event.kind, event.id);
+        if !event.detail.is_empty() {
+            println!("      {}", event.detail);
+        }
+    }
     Ok(())
 }
 
@@ -1416,8 +2728,16 @@ fn mcp_tools() -> Vec<String> {
             "Create a gstep micro step from the current worktree, or commit the current agent layer when one is active. The committing code agent and its session id are recorded automatically (claude via environment, codex via the active session); pass agent/session to override.",
             &[
                 ("message", "string", "Micro step message."),
-                ("agent", "string", "Optional code agent name override, e.g. claude or codex."),
-                ("session", "string", "Optional session id override for the committing agent."),
+                (
+                    "agent",
+                    "string",
+                    "Optional code agent name override, e.g. claude or codex.",
+                ),
+                (
+                    "session",
+                    "string",
+                    "Optional session id override for the committing agent.",
+                ),
             ],
             &["message"],
             false,
@@ -1425,8 +2745,15 @@ fn mcp_tools() -> Vec<String> {
         ),
         mcp_tool(
             "gstep_context",
-            "Recover the originating agent's session context for a gstep micro step, so a different agent can read what was being done and continue. Returns the agent, session id, transcript path, and a digest of conversation turns.",
-            &[("selector", "string", "Step selector (default gstep:@).")],
+            "Recover context: for a committed step, the originating agent's session digest so a different agent can continue it; with `agent`, the live state of an uncommitted agent layer (its note/intent, dirty status, changed paths, and conflict) for real-time coordination.",
+            &[
+                ("selector", "string", "Step selector (default gstep:@)."),
+                (
+                    "agent",
+                    "string",
+                    "Read a live, uncommitted agent layer instead of a committed step.",
+                ),
+            ],
             &[],
             true,
             false,
@@ -1472,10 +2799,22 @@ fn mcp_tools() -> Vec<String> {
             "gstep_promote",
             "Turn a gstep micro step into a real Git commit on the current branch in one shot: lays the step's tree into the worktree, commits it with Git, and binds the new commit back to the step. Use when a checkpoint is ready to become a permanent commit.",
             &[
-                ("selector", "string", "Step selector to promote, for example gstep:@ or gstep:step-3."),
+                (
+                    "selector",
+                    "string",
+                    "Step selector to promote, for example gstep:@ or gstep:step-3.",
+                ),
                 ("message", "string", "Git commit message."),
-                ("git_notes", "boolean", "Also write provenance to refs/notes/gstep."),
-                ("no_bind", "boolean", "Skip recording the gstep->commit binding."),
+                (
+                    "git_notes",
+                    "boolean",
+                    "Also write provenance to refs/notes/gstep.",
+                ),
+                (
+                    "no_bind",
+                    "boolean",
+                    "Skip recording the gstep->commit binding.",
+                ),
             ],
             &["selector", "message"],
             false,
@@ -1496,6 +2835,140 @@ fn mcp_tools() -> Vec<String> {
             &["git", "from"],
             false,
             false,
+        ),
+        mcp_tool(
+            "gstep_agent_materialize",
+            "Lay an agent layer (base + overlay) into its view directory so the agent has a working copy to edit. Folds any unsynced view edits in first. Run before an agent starts editing.",
+            &[("name", "string", "Agent layer name.")],
+            &["name"],
+            false,
+            false,
+        ),
+        mcp_tool(
+            "gstep_agent_sync",
+            "Reconcile an agent's view worktree edits (including deletions) back into its overlay so the next commit captures them. Commit auto-syncs, so this is mainly for inspecting the captured change set.",
+            &[("name", "string", "Agent layer name.")],
+            &["name"],
+            false,
+            false,
+        ),
+        mcp_tool(
+            "gstep_agent_drop",
+            "Remove an agent layer and reclaim its overlay, view, index, conflicts, and claims.",
+            &[("name", "string", "Agent layer name.")],
+            &["name"],
+            false,
+            true,
+        ),
+        mcp_tool(
+            "gstep_rebase",
+            "Replay an idle agent's uncommitted changes onto the current shared head without committing, so it stops being behind. A clean replay updates the layer; an unmergeable one records a conflict to resolve.",
+            &[("name", "string", "Agent layer name.")],
+            &["name"],
+            false,
+            false,
+        ),
+        mcp_tool(
+            "gstep_conflicts",
+            "List open merge conflicts recorded when agent commits could not merge cleanly into the shared head.",
+            &[("json", "boolean", "Return JSON output.")],
+            &[],
+            true,
+            false,
+        ),
+        mcp_tool(
+            "gstep_conflict_show",
+            "Show a conflict's detail, and optionally check the conflict-marker tree out into the agent's view for hand resolution.",
+            &[
+                ("id", "string", "Conflict id, e.g. conflict-1."),
+                (
+                    "checkout",
+                    "boolean",
+                    "Lay the conflict markers into the agent's view for editing.",
+                ),
+            ],
+            &["id"],
+            true,
+            false,
+        ),
+        mcp_tool(
+            "gstep_resolve",
+            "Resolve an open conflict. ours lands the agent's clean tree; theirs abandons it and resets to the shared head; otherwise a hand-resolved tree is landed (from the agent's view, or the given selector).",
+            &[
+                ("id", "string", "Conflict id."),
+                ("ours", "boolean", "Land the agent's own tree."),
+                (
+                    "theirs",
+                    "boolean",
+                    "Abandon the agent's change; reset to shared head.",
+                ),
+                (
+                    "from",
+                    "string",
+                    "Land this selector's tree as the resolution.",
+                ),
+                ("message", "string", "Message for the resolution step."),
+                ("force", "boolean", "Land even if conflict markers remain."),
+            ],
+            &["id"],
+            false,
+            false,
+        ),
+        mcp_tool(
+            "gstep_claim",
+            "Take or release a path lease for an agent so peers are warned before editing the same files.",
+            &[
+                ("agent", "string", "Agent taking the lease."),
+                ("glob", "string", "Path glob (supports ?, *, **)."),
+                ("ttl", "number", "Lease expiry in seconds."),
+                (
+                    "release",
+                    "boolean",
+                    "Release the matching lease instead of taking it.",
+                ),
+            ],
+            &["agent", "glob"],
+            false,
+            false,
+        ),
+        mcp_tool(
+            "gstep_claims",
+            "List active path leases (expired ones are hidden).",
+            &[("json", "boolean", "Return JSON output.")],
+            &[],
+            true,
+            false,
+        ),
+        mcp_tool(
+            "gstep_note",
+            "Set or clear an agent's advertised intent (e.g. 'refactoring auth, don't touch'), shown to peers in status and context.",
+            &[
+                ("agent", "string", "Agent name."),
+                ("text", "string", "Intent text to set."),
+                ("clear", "boolean", "Clear the agent's note."),
+            ],
+            &["agent"],
+            false,
+            false,
+        ),
+        mcp_tool(
+            "gstep_activity",
+            "Show a time-ordered feed of recent steps (with their authoring agent) and recorded conflicts, newest first.",
+            &[
+                ("json", "boolean", "Return JSON output."),
+                ("limit", "number", "Maximum number of events (default 20)."),
+            ],
+            &[],
+            true,
+            false,
+        ),
+        mcp_tool(
+            "gstep_gc",
+            "Reclaim leftover gstep metadata: expire stale claims, delete temp index files, and remove orphaned agent and view directories.",
+            &[],
+            &[],
+            false,
+            true,
         ),
     ]
 }
@@ -1638,6 +3111,10 @@ fn mcp_tool_args(name: &str, arguments: &BTreeMap<String, Json>) -> Result<McpIn
             if let Some(selector) = optional_string_arg(arguments, "selector")? {
                 invocation.args.push(selector);
             }
+            if let Some(agent) = optional_string_arg(arguments, "agent")? {
+                invocation.args.push("--agent".to_string());
+                invocation.args.push(agent);
+            }
             invocation.args.push("--json".to_string());
         }
         "gstep_branch" => {
@@ -1681,9 +3158,110 @@ fn mcp_tool_args(name: &str, arguments: &BTreeMap<String, Json>) -> Result<McpIn
                 invocation.args.push("--git-notes".to_string());
             }
         }
+        "gstep_agent_materialize" => {
+            invocation.args.push("agent-materialize".to_string());
+            invocation.args.push(required_arg(arguments, "name")?);
+        }
+        "gstep_agent_sync" => {
+            invocation.args.push("agent-sync".to_string());
+            invocation.args.push(required_arg(arguments, "name")?);
+        }
+        "gstep_agent_drop" => {
+            invocation.args.push("agent-drop".to_string());
+            invocation.args.push(required_arg(arguments, "name")?);
+        }
+        "gstep_rebase" => {
+            invocation.args.push("rebase".to_string());
+            invocation.args.push(required_arg(arguments, "name")?);
+        }
+        "gstep_conflicts" => {
+            invocation.args.push("conflicts".to_string());
+            if optional_bool_arg(arguments, "json")?.unwrap_or(true) {
+                invocation.args.push("--json".to_string());
+            }
+        }
+        "gstep_conflict_show" => {
+            invocation.args.push("conflict-show".to_string());
+            invocation.args.push(required_arg(arguments, "id")?);
+            if optional_bool_arg(arguments, "checkout")?.unwrap_or(false) {
+                invocation.args.push("--checkout".to_string());
+            }
+        }
+        "gstep_resolve" => {
+            invocation.args.push("resolve".to_string());
+            invocation.args.push(required_arg(arguments, "id")?);
+            if optional_bool_arg(arguments, "ours")?.unwrap_or(false) {
+                invocation.args.push("--ours".to_string());
+            }
+            if optional_bool_arg(arguments, "theirs")?.unwrap_or(false) {
+                invocation.args.push("--theirs".to_string());
+            }
+            if let Some(from) = optional_string_arg(arguments, "from")? {
+                invocation.args.push("--from".to_string());
+                invocation.args.push(from);
+            }
+            if let Some(message) = optional_string_arg(arguments, "message")? {
+                invocation.args.push("-m".to_string());
+                invocation.args.push(message);
+            }
+            if optional_bool_arg(arguments, "force")?.unwrap_or(false) {
+                invocation.args.push("--force".to_string());
+            }
+        }
+        "gstep_claim" => {
+            invocation.args.push("claim".to_string());
+            invocation.args.push(required_arg(arguments, "agent")?);
+            invocation.args.push(required_arg(arguments, "glob")?);
+            if let Some(ttl) = optional_number_arg(arguments, "ttl")? {
+                invocation.args.push("--ttl".to_string());
+                invocation.args.push(ttl);
+            }
+            if optional_bool_arg(arguments, "release")?.unwrap_or(false) {
+                invocation.args.push("--release".to_string());
+            }
+        }
+        "gstep_claims" => {
+            invocation.args.push("claims".to_string());
+            if optional_bool_arg(arguments, "json")?.unwrap_or(true) {
+                invocation.args.push("--json".to_string());
+            }
+        }
+        "gstep_note" => {
+            invocation.args.push("note".to_string());
+            invocation.args.push(required_arg(arguments, "agent")?);
+            if optional_bool_arg(arguments, "clear")?.unwrap_or(false) {
+                invocation.args.push("--clear".to_string());
+            } else {
+                invocation.args.push(required_arg(arguments, "text")?);
+            }
+        }
+        "gstep_activity" => {
+            invocation.args.push("activity".to_string());
+            if optional_bool_arg(arguments, "json")?.unwrap_or(true) {
+                invocation.args.push("--json".to_string());
+            }
+            if let Some(limit) = optional_number_arg(arguments, "limit")? {
+                invocation.args.push("--limit".to_string());
+                invocation.args.push(limit);
+            }
+        }
+        "gstep_gc" => {
+            invocation.args.push("gc".to_string());
+        }
         _ => return Err(Error::new(format!("unknown tool: {name}"))),
     }
     Ok(invocation)
+}
+
+/// Read an argument that may arrive as a JSON number or string, returning its
+/// textual form for the CLI subprocess.
+fn optional_number_arg(arguments: &BTreeMap<String, Json>, name: &str) -> Result<Option<String>> {
+    match arguments.get(name) {
+        Some(Json::Number(value)) => Ok(Some(value.to_string())),
+        Some(Json::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(Error::new(format!("argument must be a number: {name}"))),
+        None => Ok(None),
+    }
 }
 
 fn required_arg(arguments: &BTreeMap<String, Json>, name: &str) -> Result<String> {
@@ -1890,6 +3468,25 @@ struct Collab {
     next_conflict: usize,
     agents: Vec<Agent>,
     conflicts: Vec<Conflict>,
+    // Path leases agents take out to coordinate ("I own auth/**") so peers get
+    // an up-front warning instead of a guaranteed conflict at commit time.
+    claims: Vec<Claim>,
+}
+
+#[derive(Clone, Debug)]
+struct Claim {
+    agent: String,
+    glob: String,
+    created_at: String,
+    // Absolute Unix-second expiry; None means the lease never expires until
+    // explicitly released.
+    expires_at: Option<u64>,
+}
+
+impl Claim {
+    fn is_expired(&self, now: u64) -> bool {
+        self.expires_at.map(|at| now >= at).unwrap_or(false)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1902,6 +3499,16 @@ struct Agent {
     view_path: Option<String>,
     conflict: Option<String>,
     created_at: String,
+    // Free-form intent the agent advertises to its peers ("refactoring auth,
+    // don't touch") — surfaced in status and `context --agent`.
+    note: Option<String>,
+    // Timestamp of this layer's last write (materialize / sync / commit), used
+    // for liveness and stale-layer detection. None until first activity.
+    last_active: Option<String>,
+    // The step id this layer's base_tree corresponds to, so status can report
+    // how many steps the layer is behind the shared head. None means the
+    // anchor/base (no step yet).
+    base_step: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1909,8 +3516,13 @@ struct Conflict {
     id: String,
     agent: String,
     base_tree: String,
+    // The shared head at conflict time (the "theirs" side that already landed).
     shared_tree: String,
+    // The agent's clean tree (the "ours" side), recoverable for --ours resolves.
     agent_tree: String,
+    // The merge-tree output carrying conflict markers, materialized for manual
+    // resolution. Falls back to agent_tree for states written before this field.
+    marker_tree: String,
     paths: Vec<String>,
     message: String,
     created_at: String,
@@ -1938,8 +3550,99 @@ fn load_state(ctx: &Context) -> Result<State> {
 
 fn save_state(ctx: &Context, state: &State) -> Result<()> {
     fs::create_dir_all(&ctx.gstep_dir)?;
-    fs::write(ctx.state_path(), state.to_json())?;
+    write_atomic(&ctx.state_path(), state.to_json().as_bytes())
+}
+
+/// Write `contents` durably: stream into a sibling temp file, then rename over
+/// the destination. A crash mid-write leaves the old file intact rather than a
+/// truncated one (the rename is atomic on the same filesystem).
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::new("cannot write to a path without a parent directory"))?;
+    fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name().and_then(OsStr::to_str).unwrap_or("file"),
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&tmp, contents)?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(Error::from(error));
+    }
     Ok(())
+}
+
+/// Time, in seconds, after which an unreleased lock is presumed abandoned by a
+/// dead process. Kept generous: gstep operations are short.
+const LOCK_STALE_SECS: u64 = 30;
+
+/// Exclusive advisory lock around the whole-file read-modify-write of
+/// `state.json`. `load_state`/`save_state` are not atomic together, so two
+/// agents committing at once could otherwise clobber each other's step,
+/// shared-head, or conflict updates. The lock is a single `O_EXCL`-created
+/// lockfile; a lock older than `LOCK_STALE_SECS` is reclaimed so a crashed
+/// process cannot wedge the session permanently. Released on drop.
+struct StateLock {
+    path: PathBuf,
+}
+
+impl StateLock {
+    fn acquire(ctx: &Context) -> Result<Self> {
+        fs::create_dir_all(&ctx.gstep_dir)?;
+        let path = ctx.gstep_dir.join("state.lock");
+        let mut waited = 0u64;
+        loop {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    let _ = writeln!(file, "pid:{} at:{}", std::process::id(), now_secs());
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    if lock_is_stale(&path) {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+                    if waited >= 5_000 {
+                        return Err(Error::new(
+                            "could not acquire gstep state lock (another gstep is committing); \
+                             retry, or remove .git/gstep/state.lock if it is stale",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    waited += 50;
+                }
+                Err(error) => return Err(Error::from(error)),
+            }
+        }
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// A lockfile is stale once it is older than `LOCK_STALE_SECS`, which means the
+/// process that created it almost certainly died without releasing it.
+fn lock_is_stale(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    modified
+        .elapsed()
+        .map(|age| age.as_secs() > LOCK_STALE_SECS)
+        .unwrap_or(false)
 }
 
 fn load_bindings(ctx: &Context) -> Result<Bindings> {
@@ -1953,8 +3656,7 @@ fn load_bindings(ctx: &Context) -> Result<Bindings> {
 
 fn save_bindings(ctx: &Context, bindings: &Bindings) -> Result<()> {
     fs::create_dir_all(&ctx.gstep_dir)?;
-    fs::write(ctx.bindings_path(), bindings_to_json(bindings))?;
-    Ok(())
+    write_atomic(&ctx.bindings_path(), bindings_to_json(bindings).as_bytes())
 }
 
 fn require_collab(state: &State) -> Result<&Collab> {
@@ -2129,12 +3831,19 @@ impl Collab {
             .map(Conflict::to_json)
             .collect::<Vec<_>>()
             .join(",\n");
+        let claims = self
+            .claims
+            .iter()
+            .map(Claim::to_json)
+            .collect::<Vec<_>>()
+            .join(",\n");
         format!(
-            "{{\"shared_head_tree\": {}, \"next_conflict\": {}, \"agents\": [\n{}\n  ], \"conflicts\": [\n{}\n  ]}}",
+            "{{\"shared_head_tree\": {}, \"next_conflict\": {}, \"agents\": [\n{}\n  ], \"conflicts\": [\n{}\n  ], \"claims\": [\n{}\n  ]}}",
             json_string(&self.shared_head_tree),
             self.next_conflict,
             agents,
-            conflicts
+            conflicts,
+            claims
         )
     }
 
@@ -2159,11 +3868,57 @@ impl Collab {
                 Conflict::from_object(conflict)
             })
             .collect::<Result<Vec<_>>>()?;
+        // claims were added after the initial collab schema; tolerate states
+        // written before the field existed.
+        let claims = match object.get("claims") {
+            Some(Json::Array(values)) => values
+                .iter()
+                .map(|value| {
+                    let Json::Object(claim) = value else {
+                        return Err(Error::new("claim entry must be a JSON object"));
+                    };
+                    Claim::from_object(claim)
+                })
+                .collect::<Result<Vec<_>>>()?,
+            Some(Json::Null) | None => Vec::new(),
+            Some(_) => return Err(Error::new("claims must be a JSON array")),
+        };
         Ok(Self {
             shared_head_tree,
             next_conflict,
             agents,
             conflicts,
+            claims,
+        })
+    }
+}
+
+impl Claim {
+    fn to_json(&self) -> String {
+        let expires_at = self
+            .expires_at
+            .map(|at| at.to_string())
+            .unwrap_or_else(|| "null".to_string());
+        format!(
+            "    {{\"agent\": {}, \"glob\": {}, \"created_at\": {}, \"expires_at\": {}}}",
+            json_string(&self.agent),
+            json_string(&self.glob),
+            json_string(&self.created_at),
+            expires_at
+        )
+    }
+
+    fn from_object(object: &BTreeMap<String, Json>) -> Result<Self> {
+        let expires_at = match object.get("expires_at") {
+            Some(Json::Number(value)) => Some(*value as u64),
+            Some(Json::Null) | None => None,
+            Some(_) => return Err(Error::new("claim expires_at must be a number or null")),
+        };
+        Ok(Self {
+            agent: object_string(object, "agent")?,
+            glob: object_string(object, "glob")?,
+            created_at: object_string(object, "created_at")?,
+            expires_at,
         })
     }
 }
@@ -2171,7 +3926,7 @@ impl Collab {
 impl Agent {
     fn to_json(&self) -> String {
         format!(
-            "    {{\"name\": {}, \"base_tree\": {}, \"upper_dir\": {}, \"tombstones_path\": {}, \"index_path\": {}, \"view_path\": {}, \"conflict\": {}, \"created_at\": {}}}",
+            "    {{\"name\": {}, \"base_tree\": {}, \"upper_dir\": {}, \"tombstones_path\": {}, \"index_path\": {}, \"view_path\": {}, \"conflict\": {}, \"created_at\": {}, \"note\": {}, \"last_active\": {}, \"base_step\": {}}}",
             json_string(&self.name),
             json_string(&self.base_tree),
             json_string(&self.upper_dir),
@@ -2179,7 +3934,10 @@ impl Agent {
             json_string(&self.index_path),
             optional_json_string(self.view_path.as_deref()),
             optional_json_string(self.conflict.as_deref()),
-            json_string(&self.created_at)
+            json_string(&self.created_at),
+            optional_json_string(self.note.as_deref()),
+            optional_json_string(self.last_active.as_deref()),
+            optional_json_string(self.base_step.as_deref())
         )
     }
 
@@ -2194,6 +3952,9 @@ impl Agent {
                 .or(object_optional_string(object, "mount_path")?),
             conflict: object_optional_string(object, "conflict")?,
             created_at: object_string(object, "created_at")?,
+            note: object_optional_string(object, "note")?,
+            last_active: object_optional_string(object, "last_active")?,
+            base_step: object_optional_string(object, "base_step")?,
         })
     }
 }
@@ -2207,12 +3968,13 @@ impl Conflict {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "    {{\"id\": {}, \"agent\": {}, \"base_tree\": {}, \"shared_tree\": {}, \"agent_tree\": {}, \"paths\": [{}], \"message\": {}, \"created_at\": {}}}",
+            "    {{\"id\": {}, \"agent\": {}, \"base_tree\": {}, \"shared_tree\": {}, \"agent_tree\": {}, \"marker_tree\": {}, \"paths\": [{}], \"message\": {}, \"created_at\": {}}}",
             json_string(&self.id),
             json_string(&self.agent),
             json_string(&self.base_tree),
             json_string(&self.shared_tree),
             json_string(&self.agent_tree),
+            json_string(&self.marker_tree),
             paths,
             json_string(&self.message),
             json_string(&self.created_at)
@@ -2227,12 +3989,18 @@ impl Conflict {
                 _ => Err(Error::new("conflict path must be a JSON string")),
             })
             .collect::<Result<Vec<_>>>()?;
+        let agent_tree = object_string(object, "agent_tree")?;
+        // marker_tree was split out from agent_tree later; older states stored
+        // only the marker tree under agent_tree, so fall back to it.
+        let marker_tree =
+            object_optional_string(object, "marker_tree")?.unwrap_or_else(|| agent_tree.clone());
         Ok(Self {
             id: object_string(object, "id")?,
             agent: object_string(object, "agent")?,
             base_tree: object_string(object, "base_tree")?,
             shared_tree: object_string(object, "shared_tree")?,
-            agent_tree: object_string(object, "agent_tree")?,
+            agent_tree,
+            marker_tree,
             paths,
             message: object_string(object, "message")?,
             created_at: object_string(object, "created_at")?,
@@ -2450,18 +4218,40 @@ fn view_path_component(value: &str) -> String {
         .collect()
 }
 
-fn agent_status_json(ctx: &Context, collab: &Collab, agent: &Agent) -> Result<String> {
+fn agent_status_json(ctx: &Context, state: &State, agent: &Agent) -> Result<String> {
+    let collab = require_collab(state)?;
     let tree = agent_tree(ctx, agent)?;
     Ok(format!(
-        "    {{\"name\": {}, \"base_tree\": {}, \"shared_head_tree\": {}, \"view_tree\": {}, \"dirty\": {}, \"view_path\": {}, \"conflict\": {}}}",
+        "    {{\"name\": {}, \"base_tree\": {}, \"shared_head_tree\": {}, \"view_tree\": {}, \"dirty\": {}, \"behind\": {}, \"view_path\": {}, \"note\": {}, \"last_active\": {}, \"conflict\": {}}}",
         json_string(&agent.name),
         json_string(&agent.base_tree),
         json_string(&collab.shared_head_tree),
         json_string(&tree),
         tree != agent.base_tree,
+        agent_behind_by(state, agent),
         optional_json_string(agent.view_path.as_deref()),
+        optional_json_string(agent.note.as_deref()),
+        optional_json_string(agent.last_active.as_deref()),
         optional_json_string(agent.conflict.as_deref())
     ))
+}
+
+/// How many committed steps the agent's base is behind the shared head. Steps
+/// are appended in commit order, so this is the count of steps recorded after
+/// the one the agent's base points at (all of them, if its base predates the
+/// first step).
+fn agent_behind_by(state: &State, agent: &Agent) -> usize {
+    match &agent.base_step {
+        Some(base_step) => {
+            match state.steps.iter().position(|step| &step.id == base_step) {
+                Some(position) => state.steps.len().saturating_sub(position + 1),
+                // base_step no longer exists (e.g. dropped history); treat as
+                // up to date rather than guessing.
+                None => 0,
+            }
+        }
+        None => state.steps.len(),
+    }
 }
 
 fn cmd_current_agent_status(ctx: &Context, state: &State, name: &str, json: bool) -> Result<()> {
@@ -2473,11 +4263,12 @@ fn cmd_current_agent_status(ctx: &Context, state: &State, name: &str, json: bool
         println!(
             "{{\n  \"shared_head_tree\": {},\n  \"agent\": {}\n}}",
             json_string(&collab.shared_head_tree),
-            agent_status_json(ctx, collab, agent)?
+            agent_status_json(ctx, state, agent)?
         );
         return Ok(());
     }
     let tree = agent_tree(ctx, agent)?;
+    let behind = agent_behind_by(state, agent);
     println!("Agent:");
     println!("  name:     {}", agent.name);
     println!("  base:     {}", agent.base_tree);
@@ -2487,6 +4278,17 @@ fn cmd_current_agent_status(ctx: &Context, state: &State, name: &str, json: bool
         "  dirty:    {}",
         if tree != agent.base_tree { "yes" } else { "no" }
     );
+    println!(
+        "  behind:   {}",
+        if behind == 0 {
+            "up to date".to_string()
+        } else {
+            format!("{behind} step(s)")
+        }
+    );
+    if let Some(note) = &agent.note {
+        println!("  note:     {note}");
+    }
     println!(
         "  conflict: {}",
         agent.conflict.as_deref().unwrap_or("none")
@@ -2648,6 +4450,170 @@ fn clear_agent_overlay(ctx: &Context, agent: &Agent) -> Result<()> {
     fs::create_dir_all(&upper_dir)?;
     fs::write(ctx.gstep_dir.join(&agent.tombstones_path), "")?;
     Ok(())
+}
+
+// ===== Agent write path: materialize a layer's view, sync edits back =====
+//
+// An agent edits files inside its `view_path` (a plain materialized worktree).
+// `agent_tree` is reconstructed as base + upper − tombstones; the job of sync is
+// to turn the agent's worktree edits — including deletions — back into that
+// overlay, so a commit captures exactly what the agent did. Materialize is the
+// inverse: lay the layer's current tree into the view as a clean working copy.
+
+/// The agent layer's view directory, if one is assigned.
+fn agent_view_dir(agent: &Agent) -> Option<PathBuf> {
+    agent.view_path.as_ref().map(PathBuf::from)
+}
+
+/// Hash a plain directory's contents into a Git tree, reusing the same
+/// symlink/exec-bit handling as the overlay index builder.
+fn dir_tree(ctx: &Context, dir: &Path) -> Result<String> {
+    fs::create_dir_all(ctx.gstep_dir.join("tmp"))?;
+    let index = temp_index_path(ctx);
+    let index_ref = index.as_os_str();
+    git_env(
+        ctx,
+        &["read-tree", "--empty"],
+        &[("GIT_INDEX_FILE", index_ref)],
+    )?;
+    for path in list_upper_files(dir)? {
+        add_upper_path_to_index(ctx, index_ref, dir, &path)?;
+    }
+    let tree = git_env(ctx, &["write-tree"], &[("GIT_INDEX_FILE", index_ref)])?;
+    let _ = fs::remove_file(index);
+    Ok(tree.trim().to_string())
+}
+
+/// `git diff --name-status` between two trees, as (status_char, path) pairs.
+/// Renames are left undetected (no -M), so they surface as a delete + add.
+fn diff_name_status(
+    ctx: &Context,
+    left_tree: &str,
+    right_tree: &str,
+) -> Result<Vec<(char, String)>> {
+    let bytes = git_bytes(ctx, &["diff", "--name-status", "-z", left_tree, right_tree])?;
+    let fields = split_nul(&bytes);
+    let mut changes = Vec::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let status = &fields[index];
+        let code = status.chars().next().unwrap_or('?');
+        // Rename/copy entries carry two path fields; everything else carries one.
+        let path_count = if matches!(code, 'R' | 'C') { 2 } else { 1 };
+        if let Some(path) = fields.get(index + path_count) {
+            changes.push((code, path.clone()));
+        }
+        index += 1 + path_count;
+    }
+    Ok(changes)
+}
+
+/// Copy a single file from the view into the overlay's upper dir, preserving
+/// symlinks and the executable bit so the rebuilt tree matches the worktree.
+fn copy_into_upper(view: &Path, upper_dir: &Path, path: &str) -> Result<()> {
+    let source = view.join(path);
+    let dest = upper_dir.join(path);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let metadata = fs::symlink_metadata(&source)?;
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(&source)?;
+        let _ = fs::remove_file(&dest);
+        symlink_file(&target, &dest)?;
+    } else {
+        fs::copy(&source, &dest)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode();
+            fs::set_permissions(&dest, fs::Permissions::from_mode(mode))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn symlink_file(target: &Path, link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link).map_err(Error::from)
+}
+
+#[cfg(not(unix))]
+fn symlink_file(target: &Path, link: &Path) -> Result<()> {
+    // Best effort on non-Unix: fall back to copying the link's target bytes.
+    fs::write(link, target.to_string_lossy().as_bytes()).map_err(Error::from)
+}
+
+/// Reconcile the agent's view worktree into its overlay (upper + tombstones).
+/// Returns the base→view changes, or None when the agent has no materialized
+/// view (in which case the overlay is left untouched — callers that write the
+/// upper dir directly still work). Rebuilds the overlay from scratch so it is
+/// idempotent and never leaves stale upper files behind.
+fn sync_agent_overlay(ctx: &Context, agent: &Agent) -> Result<Option<Vec<(char, String)>>> {
+    let Some(view) = agent_view_dir(agent) else {
+        return Ok(None);
+    };
+    if !view.exists() {
+        return Ok(None);
+    }
+    let view_tree = dir_tree(ctx, &view)?;
+    let changes = diff_name_status(ctx, &agent.base_tree, &view_tree)?;
+    clear_agent_overlay(ctx, agent)?;
+    let upper_dir = ctx.gstep_dir.join(&agent.upper_dir);
+    let mut tombstones = Vec::new();
+    for (status, path) in &changes {
+        if *status == 'D' {
+            tombstones.push(path.clone());
+        } else {
+            copy_into_upper(&view, &upper_dir, path)?;
+        }
+    }
+    let mut body = tombstones.join("\n");
+    if !body.is_empty() {
+        body.push('\n');
+    }
+    fs::write(ctx.gstep_dir.join(&agent.tombstones_path), body)?;
+    Ok(Some(changes))
+}
+
+/// Thin wrapper used by commit: fold any view edits into the named agent's
+/// overlay before the tree to commit is computed.
+fn sync_agent_view(ctx: &Context, state: &State, name: &str) -> Result<()> {
+    if let Some(agent) = state.find_agent(name).cloned() {
+        sync_agent_overlay(ctx, &agent)?;
+    }
+    Ok(())
+}
+
+/// Lay `tree` into `dir`, deleting any files present in `dir` that the tree no
+/// longer contains. The generic counterpart of `checkout_tree_to_worktree`,
+/// usable for an arbitrary directory (such as an agent view).
+fn materialize_tree_clean(ctx: &Context, tree: &str, dir: &Path) -> Result<()> {
+    let target_files = tree_files(ctx, tree)?.into_iter().collect::<BTreeSet<_>>();
+    if dir.exists() {
+        for file in list_upper_files(dir)? {
+            if !target_files.contains(&file) {
+                let path = dir.join(&file);
+                if path.is_file() || path.is_symlink() {
+                    fs::remove_file(&path)?;
+                    prune_empty_parents(dir, &path)?;
+                }
+            }
+        }
+    }
+    materialize_tree(ctx, tree, dir)
+}
+
+/// Re-lay the agent's current tree into its view, if a view is materialized.
+fn rematerialize_view_if_present(ctx: &Context, agent: &Agent) -> Result<()> {
+    let Some(view) = agent_view_dir(agent) else {
+        return Ok(());
+    };
+    if !view.exists() {
+        return Ok(());
+    }
+    let tree = agent_tree(ctx, agent)?;
+    materialize_tree_clean(ctx, &tree, &view)
 }
 
 #[derive(Clone, Debug)]
@@ -3103,11 +5069,33 @@ fn first_line_or_empty(value: &str) -> &str {
 }
 
 fn current_timestamp() -> String {
-    let seconds = SystemTime::now()
+    format!("unix:{}", now_secs())
+}
+
+/// Seconds since the Unix epoch, saturating to 0 if the clock is before it.
+fn now_secs() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    format!("unix:{seconds}")
+        .unwrap_or(0)
+}
+
+/// Parse a `unix:<secs>` timestamp string back into seconds.
+fn parse_unix_ts(value: &str) -> Option<u64> {
+    value.strip_prefix("unix:").and_then(|n| n.parse().ok())
+}
+
+/// Render an age in seconds as a terse human string (e.g. `12s`, `4m`, `2h`).
+fn format_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
 }
 
 // ===== Cross-agent handoff: agent identity + session context =====
@@ -3137,13 +5125,13 @@ fn resolve_commit_identity(ctx: &Context, args: &CommitArgs) -> Option<AgentIden
     }
     // Claude Code exports its session id into the environment, which the gstep
     // CLI/MCP subprocess it spawns inherits. This is authoritative.
-    if let Ok(sid) = env::var("CLAUDE_CODE_SESSION_ID") {
-        if !sid.trim().is_empty() {
-            return Some(AgentIdentity {
-                agent: "claude".to_string(),
-                session_id: Some(sid),
-            });
-        }
+    if let Ok(sid) = env::var("CLAUDE_CODE_SESSION_ID")
+        && !sid.trim().is_empty()
+    {
+        return Some(AgentIdentity {
+            agent: "claude".to_string(),
+            session_id: Some(sid),
+        });
     }
     // Codex does not expose its session id to subprocesses, so fall back to
     // detecting the Codex rollout that is actively being written for this
@@ -3190,10 +5178,10 @@ fn find_files(root: &Path, predicate: &dyn Fn(&str) -> bool, out: &mut Vec<PathB
         let path = entry.path();
         if file_type.is_dir() {
             find_files(&path, predicate, out);
-        } else if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-            if predicate(name) {
-                out.push(path);
-            }
+        } else if let Some(name) = path.file_name().and_then(|name| name.to_str())
+            && predicate(name)
+        {
+            out.push(path);
         }
     }
 }
@@ -3254,7 +5242,10 @@ fn detect_active_codex_session(ctx: &Context) -> Option<String> {
 /// representation differences do not cause a miss.
 fn same_path(a: &str, b: &Path) -> bool {
     fn norm(value: &str) -> String {
-        value.replace('\\', "/").trim_end_matches('/').to_lowercase()
+        value
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_lowercase()
     }
     norm(a) == norm(&b.display().to_string())
 }
@@ -3320,8 +5311,12 @@ struct Turn {
 /// Parse an agent transcript into an ordered list of user/assistant turns,
 /// normalizing the two on-disk formats into one shape.
 fn parse_transcript(agent: &str, path: &Path) -> Result<Vec<Turn>> {
-    let file = fs::File::open(path)
-        .map_err(|error| Error::new(format!("cannot open transcript {}: {error}", path.display())))?;
+    let file = fs::File::open(path).map_err(|error| {
+        Error::new(format!(
+            "cannot open transcript {}: {error}",
+            path.display()
+        ))
+    })?;
     let reader = io::BufReader::new(file);
     let mut turns = Vec::new();
     for line in reader.lines() {
@@ -3372,14 +5367,12 @@ fn parse_claude_line(object: &BTreeMap<String, Json>, turns: &mut Vec<Turn>) {
 fn extract_text_blocks(blocks: &[Json]) -> String {
     let mut parts = Vec::new();
     for block in blocks {
-        if let Json::Object(block) = block {
-            if let Some(Json::String(kind)) = block.get("type") {
-                if kind == "text" {
-                    if let Some(Json::String(text)) = block.get("text") {
-                        parts.push(text.clone());
-                    }
-                }
-            }
+        if let Json::Object(block) = block
+            && let Some(Json::String(kind)) = block.get("type")
+            && kind == "text"
+            && let Some(Json::String(text)) = block.get("text")
+        {
+            parts.push(text.clone());
         }
     }
     parts.join("\n")
@@ -3462,17 +5455,116 @@ fn truncate_turn(turn: &Turn) -> Turn {
     }
 }
 
+/// `gstep context --agent <name>` — read a live, uncommitted agent layer: its
+/// advertised intent (note), liveness, dirty status, the paths it has changed
+/// vs the shared head, and any open conflict. This is the real-time coordination
+/// channel for agents working at the same time, as opposed to the step-scoped
+/// transcript handoff.
+fn cmd_agent_context(name: &str, json: bool) -> Result<()> {
+    let ctx = Context::discover()?;
+    let state = load_state(&ctx)?;
+    let collab = require_collab(&state)?;
+    let agent = state
+        .find_agent(name)
+        .ok_or_else(|| Error::new(format!("unknown agent: {name}")))?;
+    let tree = agent_tree(&ctx, agent)?;
+    let dirty = tree != agent.base_tree;
+    let changes = if dirty {
+        diff_name_status(&ctx, &collab.shared_head_tree, &tree)?
+    } else {
+        Vec::new()
+    };
+    let behind = agent_behind_by(&state, agent);
+
+    if json {
+        let changed = changes
+            .iter()
+            .map(|(status, path)| {
+                format!(
+                    "{{\"status\": {}, \"path\": {}}}",
+                    json_string(&status.to_string()),
+                    json_string(path)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "{{\n  \"agent\": {},\n  \"note\": {},\n  \"dirty\": {},\n  \"behind\": {},\n  \"last_active\": {},\n  \"conflict\": {},\n  \"changes\": [{}]\n}}",
+            json_string(name),
+            optional_json_string(agent.note.as_deref()),
+            dirty,
+            behind,
+            optional_json_string(agent.last_active.as_deref()),
+            optional_json_string(agent.conflict.as_deref()),
+            changed
+        );
+        return Ok(());
+    }
+
+    println!("Context for agent {name}");
+    println!("  note:     {}", agent.note.as_deref().unwrap_or("(none)"));
+    println!("  dirty:    {}", if dirty { "yes" } else { "no" });
+    println!(
+        "  behind:   {}",
+        if behind == 0 {
+            "up to date".to_string()
+        } else {
+            format!("{behind} step(s)")
+        }
+    );
+    let now = now_secs();
+    println!(
+        "  active:   {}",
+        agent
+            .last_active
+            .as_deref()
+            .and_then(parse_unix_ts)
+            .map(|ts| format!("{} ago", format_age(now.saturating_sub(ts))))
+            .unwrap_or_else(|| "never".to_string())
+    );
+    println!(
+        "  conflict: {}",
+        agent.conflict.as_deref().unwrap_or("none")
+    );
+    if !changes.is_empty() {
+        println!("  changes vs shared:");
+        for (status, path) in changes {
+            println!("    {status} {path}");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_context(args: &[String]) -> Result<()> {
     let mut json = false;
     let mut selector = None;
-    for arg in args {
-        match arg.as_str() {
+    let mut agent = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
             "--json" => json = true,
-            other if selector.is_none() => selector = Some(other.to_string()),
+            "--agent" => {
+                index += 1;
+                agent = Some(
+                    args.get(index)
+                        .ok_or_else(|| Error::new("--agent requires an agent name"))?
+                        .clone(),
+                );
+            }
+            other if selector.is_none() && !other.starts_with('-') => {
+                selector = Some(other.to_string())
+            }
             other => {
                 return Err(Error::new(format!("unexpected context argument: {other}")));
             }
         }
+        index += 1;
+    }
+
+    // `context --agent <name>` reads a *live, uncommitted* layer's intent and
+    // working state, rather than a committed step's session transcript.
+    if let Some(agent) = agent {
+        return cmd_agent_context(&agent, json);
     }
     let selector = selector.unwrap_or_else(|| "gstep:@".to_string());
 

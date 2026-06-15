@@ -73,7 +73,10 @@ fn promote_turns_a_micro_step_into_a_real_git_commit() {
     let head_after = repo.git(&["rev-parse", "HEAD"]);
     assert_ne!(head_before, head_after);
     assert_eq!(repo.git(&["log", "--oneline"]).lines().count(), 2);
-    assert_eq!(repo.git(&["log", "-1", "--format=%s"]).trim(), "ship micro one");
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]).trim(),
+        "ship micro one"
+    );
     assert_eq!(repo.read("app.txt"), "micro\n");
     // The worktree is clean: the commit captured everything.
     assert_eq!(repo.git(&["status", "--porcelain"]).trim(), "");
@@ -350,6 +353,276 @@ fn agent_timeline_reports_conflicts_at_commit_time() {
     assert!(status.contains("\"conflict\": \"conflict-1\""));
 }
 
+#[test]
+fn agent_materialize_sync_captures_edits_and_deletions() {
+    let repo = TestRepo::new("agent-writepath");
+    repo.write("app.txt", "base\n");
+    repo.write("drop.txt", "remove me\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+
+    // Materialize gives the agent a working copy of the shared head.
+    let materialized = repo.gstep(&["agent-materialize", "alpha"]);
+    assert!(materialized.contains("Materialized agent alpha"));
+    let view = repo.view("team", "alpha");
+    assert_eq!(repo.read(&format!("{view}/app.txt")), "base\n");
+
+    // Edit in the view: modify a file, add a file, delete a file.
+    repo.write(&format!("{view}/app.txt"), "alpha-edit\n");
+    repo.write(&format!("{view}/new.txt"), "fresh\n");
+    repo.remove(&format!("{view}/drop.txt"));
+
+    // Sync folds the worktree edits (including the deletion) into the overlay.
+    let synced = repo.gstep(&["agent-sync", "alpha"]);
+    assert!(synced.contains("changed: 2"));
+    assert!(synced.contains("deleted: 1"));
+    assert!(synced.contains("D drop.txt"));
+
+    // Committing the agent lands exactly those changes in the shared head.
+    let commit = repo.gstep_agent("alpha", &["commit", "-m", "alpha work"]);
+    assert!(commit.contains("Committed agent alpha as gstep:step-1"));
+
+    let out = repo.path.join("out");
+    repo.gstep(&["materialize", "gstep:@", out.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(out.join("app.txt")).unwrap(),
+        "alpha-edit\n"
+    );
+    assert_eq!(fs::read_to_string(out.join("new.txt")).unwrap(), "fresh\n");
+    assert!(!out.join("drop.txt").exists(), "deletion must be captured");
+}
+
+#[test]
+fn commit_auto_syncs_the_agent_view() {
+    let repo = TestRepo::new("agent-autosync");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["agent-materialize", "alpha"]);
+
+    // Edit only in the view, then commit without an explicit sync: the commit
+    // path must fold the view edits in by itself.
+    let view = repo.view("team", "alpha");
+    repo.write(&format!("{view}/app.txt"), "from view\n");
+    repo.gstep_agent("alpha", &["commit", "-m", "via view"]);
+
+    let out = repo.path.join("out");
+    repo.gstep(&["materialize", "gstep:@", out.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(out.join("app.txt")).unwrap(),
+        "from view\n"
+    );
+}
+
+#[test]
+fn conflicts_list_show_and_resolve_close_the_loop() {
+    let repo = TestRepo::new("conflict-resolve");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["fork", "beta"]);
+
+    repo.write(".git/gstep/agents/alpha/upper/app.txt", "alpha\n");
+    repo.gstep_agent("alpha", &["commit", "-m", "alpha change"]);
+    repo.write(".git/gstep/agents/beta/upper/app.txt", "beta\n");
+    repo.gstep_agent_fail("beta", &["commit", "-m", "beta change"]);
+
+    // The conflict is listable and inspectable.
+    let conflicts = repo.gstep(&["conflicts", "--json"]);
+    assert!(conflicts.contains("\"id\": \"conflict-1\""));
+    assert!(conflicts.contains("\"agent\": \"beta\""));
+    let show = repo.gstep(&["conflict-show", "conflict-1"]);
+    assert!(show.contains("Conflict conflict-1"));
+    assert!(show.contains("app.txt"));
+
+    // --ours lands beta's tree as a new shared step and clears the conflict.
+    let resolved = repo.gstep(&["resolve", "conflict-1", "--ours"]);
+    assert!(resolved.contains("Resolved conflict-1 as gstep:step-2"));
+    let after = repo.gstep(&["conflicts"]);
+    assert!(after.contains("No open conflicts"));
+
+    let out = repo.path.join("out");
+    repo.gstep(&["materialize", "gstep:@", out.to_str().unwrap()]);
+    assert_eq!(fs::read_to_string(out.join("app.txt")).unwrap(), "beta\n");
+}
+
+#[test]
+fn resolve_refuses_unresolved_conflict_markers() {
+    let repo = TestRepo::new("conflict-guard");
+    repo.write("app.txt", "l1\nl2\nl3\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["fork", "beta"]);
+
+    repo.write(".git/gstep/agents/alpha/upper/app.txt", "l1\nALPHA\nl3\n");
+    repo.gstep_agent("alpha", &["commit", "-m", "alpha"]);
+    repo.write(".git/gstep/agents/beta/upper/app.txt", "l1\nBETA\nl3\n");
+    repo.gstep_agent_fail("beta", &["commit", "-m", "beta"]);
+
+    // Check the markers out into beta's view, then try to resolve without
+    // fixing them: the half-resolved tree must be refused.
+    repo.gstep(&["conflict-show", "conflict-1", "--checkout"]);
+    let view = repo.view("team", "beta");
+    assert!(repo.read(&format!("{view}/app.txt")).contains("<<<<<<<"));
+    let refused = repo.gstep_fail(&["resolve", "conflict-1"]);
+    assert!(refused.contains("still has conflict markers"));
+
+    // Fix the markers and resolve from the view.
+    repo.write(&format!("{view}/app.txt"), "l1\nMERGED\nl3\n");
+    let resolved = repo.gstep(&["resolve", "conflict-1"]);
+    assert!(resolved.contains("Resolved conflict-1"));
+    let out = repo.path.join("out");
+    repo.gstep(&["materialize", "gstep:@", out.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(out.join("app.txt")).unwrap(),
+        "l1\nMERGED\nl3\n"
+    );
+}
+
+#[test]
+fn claims_warn_on_overlap_and_can_be_released() {
+    let repo = TestRepo::new("claims");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["fork", "beta"]);
+
+    let claimed = repo.gstep(&["claim", "beta", "app.txt"]);
+    assert!(claimed.contains("claimed app.txt"));
+    let listed = repo.gstep(&["claims"]);
+    assert!(listed.contains("beta -> app.txt"));
+    let json = repo.gstep(&["claims", "--json"]);
+    assert!(json.contains("\"agent\": \"beta\""));
+    assert!(json.contains("\"glob\": \"app.txt\""));
+
+    // alpha editing a beta-claimed path still commits (warnings are advisory).
+    repo.write(".git/gstep/agents/alpha/upper/app.txt", "alpha\n");
+    let commit = repo.gstep_agent("alpha", &["commit", "-m", "alpha"]);
+    assert!(commit.contains("Committed agent alpha"));
+
+    // Releasing the claim empties the list.
+    repo.gstep(&["claim", "beta", "app.txt", "--release"]);
+    let empty = repo.gstep(&["claims"]);
+    assert!(empty.contains("No active claims"));
+}
+
+#[test]
+fn claim_enforcement_blocks_when_enabled() {
+    let repo = TestRepo::new("claim-enforce");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["fork", "beta"]);
+    repo.gstep(&["claim", "beta", "app.txt"]);
+
+    // With enforcement on, alpha editing beta's claimed path is refused.
+    repo.write(".git/gstep/agents/alpha/upper/app.txt", "alpha\n");
+    let refused = repo.gstep_fail_with_env(
+        &["commit", "-m", "alpha"],
+        &[("GSTEP_AGENT", "alpha"), ("GSTEP_ENFORCE_CLAIMS", "1")],
+    );
+    assert!(refused.contains("claimed paths"));
+}
+
+#[test]
+fn note_sets_intent_and_agent_context_reads_it() {
+    let repo = TestRepo::new("notes");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+
+    repo.gstep(&["note", "alpha", "refactoring", "the", "parser"]);
+    let context = repo.gstep(&["context", "--agent", "alpha"]);
+    assert!(context.contains("refactoring the parser"));
+    let json = repo.gstep(&["context", "--agent", "alpha", "--json"]);
+    assert!(json.contains("\"note\": \"refactoring the parser\""));
+
+    repo.gstep(&["note", "alpha", "--clear"]);
+    let cleared = repo.gstep(&["context", "--agent", "alpha"]);
+    assert!(cleared.contains("note:     (none)"));
+}
+
+#[test]
+fn rebase_brings_a_behind_agent_up_to_date() {
+    let repo = TestRepo::new("rebase");
+    repo.write("app.txt", "base\n");
+    repo.write("other.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["fork", "beta"]);
+
+    // beta lands a change to other.txt, moving the shared head forward.
+    repo.write(".git/gstep/agents/beta/upper/other.txt", "beta\n");
+    repo.gstep_agent("beta", &["commit", "-m", "beta other"]);
+
+    // alpha has an uncommitted, non-conflicting change to app.txt and is behind.
+    repo.write(".git/gstep/agents/alpha/upper/app.txt", "alpha\n");
+    let before = repo.gstep(&["status", "--all", "--json"]);
+    assert!(before.contains("\"name\": \"alpha\""));
+
+    let rebased = repo.gstep(&["rebase", "alpha"]);
+    assert!(rebased.contains("Rebased agent alpha"));
+
+    // After rebasing, alpha still carries its own change and can commit cleanly.
+    let commit = repo.gstep_agent("alpha", &["commit", "-m", "alpha app"]);
+    assert!(commit.contains("Committed agent alpha"));
+    let out = repo.path.join("out");
+    repo.gstep(&["materialize", "gstep:@", out.to_str().unwrap()]);
+    assert_eq!(fs::read_to_string(out.join("app.txt")).unwrap(), "alpha\n");
+    assert_eq!(fs::read_to_string(out.join("other.txt")).unwrap(), "beta\n");
+}
+
+#[test]
+fn agent_drop_and_gc_reclaim_layers() {
+    let repo = TestRepo::new("drop-gc");
+    repo.write("app.txt", "base\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "base"]);
+
+    repo.gstep(&["begin", "team"]);
+    repo.gstep(&["fork", "alpha"]);
+    repo.gstep(&["agent-materialize", "alpha"]);
+    assert!(repo.exists(".git/gstep/agents/alpha"));
+    assert!(repo.exists(&repo.view("team", "alpha")));
+
+    let dropped = repo.gstep(&["agent-drop", "alpha"]);
+    assert!(dropped.contains("Dropped agent alpha"));
+    assert!(
+        !repo.exists(".git/gstep/agents/alpha"),
+        "layer dir reclaimed"
+    );
+    assert!(!repo.exists(&repo.view("team", "alpha")), "view reclaimed");
+
+    let gc = repo.gstep(&["gc"]);
+    assert!(gc.contains("Garbage collected gstep metadata"));
+    let status = repo.gstep(&["status", "--all", "--json"]);
+    assert!(!status.contains("\"name\": \"alpha\""));
+}
+
 struct TestRepo {
     path: PathBuf,
 }
@@ -384,6 +657,20 @@ impl TestRepo {
 
     fn read(&self, path: &str) -> String {
         fs::read_to_string(self.path.join(path)).unwrap()
+    }
+
+    fn remove(&self, path: &str) {
+        fs::remove_file(self.path.join(path)).unwrap();
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.path.join(path).exists()
+    }
+
+    /// The deterministic view directory for an agent layer, relative to the
+    /// repo root (`.git/gstep/views/<session>/<agent>`).
+    fn view(&self, session: &str, agent: &str) -> String {
+        format!(".git/gstep/views/{session}/{agent}")
     }
 
     fn git(&self, args: &[&str]) -> String {
